@@ -47,5 +47,5 @@ export interface TrackingProvider {
   readonly carrierKeys: string[];
   readonly providerName: string;
   isConfigured(): boolean;
-  fetchTracking(trackingNumber: string): Promise<TrackingResult>;
+  fetchTracking(trackingNumber: string, carrier?: string): Promise<TrackingResult>;
 }
