@@ -1,0 +1,1 @@
+{"version":3,"file":"ups.d.ts","sourceRoot":"","sources":["../../../../src/services/tracking/providers/ups.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,gBAAgB,EAAyB,cAAc,EAAE,MAAM,UAAU,CAAC;AAWnF,qBAAa,mBAAoB,YAAW,gBAAgB;IAC1D,QAAQ,CAAC,YAAY,SAAS;IAC9B,QAAQ,CAAC,WAAW,WAAoC;IAExD,YAAY,IAAI,OAAO;IAIjB,aAAa,CAAC,cAAc,EAAE,MAAM,GAAG,OAAO,CAAC,cAAc,CAAC;CAqCrE"}

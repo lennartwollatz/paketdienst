@@ -1,0 +1,127 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                   String         @id @default(cuid())
+  email                String         @unique
+  passwordHash         String
+  isTestUser           Boolean        @default(false)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  hasPaymentMethod     Boolean        @default(false)
+  resetToken           String?
+  resetTokenExpiry     DateTime?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  emailAccounts        EmailAccount[]
+  orders               Order[]
+}
+
+model EmailAccount {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          String
+  email             String
+  imapHost          String
+  imapPort          Int      @default(993)
+  username          String
+  passwordEncrypted String
+  lastSyncAt        DateTime?
+  blockedFolders    String   @default("[]")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders            Order[]
+}
+
+model Order {
+  id             String         @id @default(cuid())
+  userId         String
+  emailAccountId String?
+  shop           String
+  orderNumber    String?
+  trackingNumber String?
+  carrier        String?
+  price          Float?
+  currency       String?        @default("EUR")
+  status         String         @default("unknown")
+  orderDate      DateTime?
+  estimatedDelivery DateTime?
+  subject           String?
+  emailBody         String?
+  emailBodyHtml     String?
+  rawEmailId        String?
+  deliveryAddress   String?
+  emailStatus       String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailAccount   EmailAccount?  @relation(fields: [emailAccountId], references: [id])
+  trackingEvents TrackingEvent[]
+  attachments    OrderAttachment[]
+  orderEmails    OrderEmail[]
+}
+
+model TrackingEvent {
+  id          String   @id @default(cuid())
+  orderId     String
+  timestamp   DateTime
+  location    String?
+  status      String
+  description String
+  createdAt   DateTime @default(now())
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model OrderAttachment {
+  id        String   @id @default(cuid())
+  orderId   String
+  filename  String
+  mimeType  String
+  sizeBytes Int
+  data      Bytes
+  createdAt DateTime @default(now())
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model OrderEmail {
+  id          String    @id @default(cuid())
+  orderId     String
+  subject     String?
+  fromAddress String?
+  receivedAt  DateTime?
+  bodyText    String?
+  bodyHtml    String?
+  createdAt   DateTime  @default(now())
+
+  // Von GPT extrahierte Daten – bleiben dauerhaft erhalten (auch nach Merge/Split)
+  gptShop              String?
+  gptPrice             Float?
+  gptCarrier           String?
+  gptTrackingNumber    String?
+  gptDeliveryStatus    String?
+  gptOrderNumber       String?
+  gptEstimatedDelivery DateTime?
+  gptDeliveryAddress   String?
+  gptCurrency          String?
+  gptOrderDate         DateTime?
+
+  order       Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model ProcessedEmail {
+  id          String   @id @default(cuid())
+  userId      String
+  rawEmailId  String
+  isOrder     Boolean  @default(false)
+  processedAt DateTime @default(now())
+
+  @@unique([userId, rawEmailId])
+  @@index([userId])
+}
