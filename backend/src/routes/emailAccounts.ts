@@ -359,6 +359,8 @@ router.get('/providers', requireAuth, (_req: AuthRequest, res: Response) => {
 });
 
 // DELETE /api/email-accounts/:id
+// Löscht das Konto inklusive aller zugehörigen Bestellungen und ProcessedEmail-Einträge.
+// TrackingEvents, OrderAttachments und OrderEmails werden per Cascade automatisch entfernt.
 router.delete('/:id', requireAuth, requirePayment, async (req: AuthRequest, res: Response) => {
   const accountId = String(req.params.id);
   const userId = String(req.user!.id);
@@ -369,8 +371,20 @@ router.delete('/:id', requireAuth, requirePayment, async (req: AuthRequest, res:
 
   if (!account) return res.status(404).json({ error: 'Konto nicht gefunden' });
 
-  await prisma.emailAccount.delete({ where: { id: account.id } });
-  return res.json({ message: 'Konto gelöscht' });
+  const [, deletedOrders] = await prisma.$transaction([
+    prisma.processedEmail.deleteMany({
+      where: { userId, rawEmailId: { contains: accountId } },
+    }),
+    prisma.order.deleteMany({
+      where: { userId, emailAccountId: accountId },
+    }),
+    prisma.emailAccount.delete({ where: { id: account.id } }),
+  ]);
+
+  return res.json({
+    message: `Konto gelöscht (${deletedOrders.count} Bestellung${deletedOrders.count === 1 ? '' : 'en'} entfernt)`,
+    deletedOrders: deletedOrders.count,
+  });
 });
 
 // GET /api/email-accounts/:id/folders
