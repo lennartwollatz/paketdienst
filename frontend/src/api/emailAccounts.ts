@@ -52,9 +52,15 @@ export const emailAccountsApi = {
     ),
 
   syncAll: () =>
-    api.post<{ results: { accountId: string; email: string; newOrders?: number; error?: string }[] }>(
-      '/email-accounts/sync-all'
-    ),
+    api.post<{
+      results: {
+        accountId: string;
+        email: string;
+        newOrders?: number;
+        mergedOrders?: number;
+        error?: string;
+      }[];
+    }>('/email-accounts/sync-all'),
 
   getFolders: (id: string) =>
     api.get<{ folders: FolderInfo[]; blockedFolders: string[] }>(`/email-accounts/${id}/folders`),
