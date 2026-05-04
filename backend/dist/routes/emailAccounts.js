@@ -8,9 +8,23 @@ const zod_1 = require("zod");
 const auth_1 = require("../middleware/auth");
 const imap_1 = require("../services/imap");
 const openai_1 = require("../services/openai");
+const syncLock_1 = require("../services/syncLock");
 const orders_1 = require("./orders");
 const router = (0, express_1.Router)();
 const prisma = new client_1.PrismaClient();
+/** Antwort, wenn ein Sync-Lock nicht erworben werden konnte. */
+function syncLockResponse(res, reason) {
+    if (reason === 'busy_user') {
+        return res.status(409).json({
+            error: 'Es läuft bereits ein Sync für deinen Account. Bitte warte, bis er abgeschlossen ist.',
+            code: 'sync_in_progress',
+        });
+    }
+    return res.status(503).json({
+        error: `Aktuell synchronisieren bereits ${syncLock_1.MAX_PARALLEL_USERS} Nutzer gleichzeitig. Bitte versuche es in wenigen Minuten erneut.`,
+        code: 'sync_capacity_reached',
+    });
+}
 /** Liest aus einem imapflow-Fehler (inkl. AggregateError) eine lesbare Fehlermeldung */
 function extractSyncError(err) {
     let codes = '';
@@ -326,6 +340,8 @@ router.get('/providers', auth_1.requireAuth, (_req, res) => {
     return res.json(PROVIDER_DEFAULTS);
 });
 // DELETE /api/email-accounts/:id
+// Löscht das Konto inklusive aller zugehörigen Bestellungen und ProcessedEmail-Einträge.
+// TrackingEvents, OrderAttachments und OrderEmails werden per Cascade automatisch entfernt.
 router.delete('/:id', auth_1.requireAuth, auth_1.requirePayment, async (req, res) => {
     const accountId = String(req.params.id);
     const userId = String(req.user.id);
@@ -334,8 +350,19 @@ router.delete('/:id', auth_1.requireAuth, auth_1.requirePayment, async (req, res
     });
     if (!account)
         return res.status(404).json({ error: 'Konto nicht gefunden' });
-    await prisma.emailAccount.delete({ where: { id: account.id } });
-    return res.json({ message: 'Konto gelöscht' });
+    const [, deletedOrders] = await prisma.$transaction([
+        prisma.processedEmail.deleteMany({
+            where: { userId, rawEmailId: { contains: accountId } },
+        }),
+        prisma.order.deleteMany({
+            where: { userId, emailAccountId: accountId },
+        }),
+        prisma.emailAccount.delete({ where: { id: account.id } }),
+    ]);
+    return res.json({
+        message: `Konto gelöscht (${deletedOrders.count} Bestellung${deletedOrders.count === 1 ? '' : 'en'} entfernt)`,
+        deletedOrders: deletedOrders.count,
+    });
 });
 // GET /api/email-accounts/:id/folders
 // Verbindet sich per IMAP und gibt alle verfügbaren Ordner zurück
@@ -391,9 +418,12 @@ router.patch('/:id', auth_1.requireAuth, auth_1.requirePayment, async (req, res)
 });
 // POST /api/email-accounts/:id/sync
 router.post('/:id/sync', auth_1.requireAuth, auth_1.requirePayment, async (req, res) => {
+    const accountId = String(req.params.id);
+    const userId = String(req.user.id);
+    const lock = (0, syncLock_1.tryAcquireSyncLock)(userId);
+    if (!lock.ok)
+        return syncLockResponse(res, lock.reason);
     try {
-        const accountId = String(req.params.id);
-        const userId = String(req.user.id);
         const account = await prisma.emailAccount.findFirst({
             where: { id: accountId, userId },
         });
@@ -452,13 +482,19 @@ router.post('/:id/sync', auth_1.requireAuth, auth_1.requirePayment, async (req, 
         console.error(err);
         return res.status(500).json({ error: extractSyncError(err) });
     }
+    finally {
+        lock.release();
+    }
 });
 // POST /api/email-accounts/:id/resync
 // Setzt alle verarbeiteten E-Mails zurück und startet einen kompletten Neusync
 router.post('/:id/resync', auth_1.requireAuth, auth_1.requirePayment, async (req, res) => {
+    const accountId = String(req.params.id);
+    const userId = String(req.user.id);
+    const lock = (0, syncLock_1.tryAcquireSyncLock)(userId);
+    if (!lock.ok)
+        return syncLockResponse(res, lock.reason);
     try {
-        const accountId = String(req.params.id);
-        const userId = String(req.user.id);
         const account = await prisma.emailAccount.findFirst({ where: { id: accountId, userId } });
         if (!account)
             return res.status(404).json({ error: 'Konto nicht gefunden' });
@@ -513,86 +549,122 @@ router.post('/:id/resync', auth_1.requireAuth, auth_1.requirePayment, async (req
         console.error(err);
         return res.status(500).json({ error: extractSyncError(err) });
     }
+    finally {
+        lock.release();
+    }
 });
 // POST /api/email-accounts/sync-all
 // Ablauf: 1) Alle Accounts abrufen  2) Alle E-Mails holen  3) Ein einziger Batch an GPT  4) Speichern
 router.post('/sync-all', auth_1.requireAuth, auth_1.requirePayment, async (req, res) => {
     const userId = String(req.user.id);
-    const accounts = await prisma.emailAccount.findMany({ where: { userId } });
-    const accountEmailsList = await Promise.all(accounts.map(async (account) => {
-        try {
-            const password = decryptPassword(account.passwordEncrypted);
-            let blockedFolders = [];
+    const lock = (0, syncLock_1.tryAcquireSyncLock)(userId);
+    if (!lock.ok)
+        return syncLockResponse(res, lock.reason);
+    try {
+        const accounts = await prisma.emailAccount.findMany({ where: { userId } });
+        const accountEmailsList = await Promise.all(accounts.map(async (account) => {
             try {
-                blockedFolders = JSON.parse(account.blockedFolders);
+                const password = decryptPassword(account.passwordEncrypted);
+                let blockedFolders = [];
+                try {
+                    blockedFolders = JSON.parse(account.blockedFolders);
+                }
+                catch {
+                    blockedFolders = [];
+                }
+                const isFirstSync = !account.lastSyncAt;
+                const twoMonthsAgo = new Date();
+                twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+                const fetchOptions = isFirstSync
+                    ? { sinceDate: twoMonthsAgo, blockedFolders }
+                    : { sinceDate: new Date(account.lastSyncAt.getTime() - 60 * 60 * 1000), blockedFolders };
+                console.log(`[sync-all] ${isFirstSync ? 'Vollsync (letzte 2 Monate)' : 'Deltasync'} für ${account.email}`);
+                const emails = await (0, imap_1.fetchEmails)({ host: account.imapHost, port: account.imapPort, username: account.username, password }, fetchOptions);
+                return { account, emails };
             }
-            catch {
-                blockedFolders = [];
+            catch (err) {
+                console.error(`[sync-all] Fehler beim Abrufen von ${account.email}:`, err);
+                return { account, emails: [], error: extractSyncError(err) };
             }
-            const isFirstSync = !account.lastSyncAt;
-            const twoMonthsAgo = new Date();
-            twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-            const fetchOptions = isFirstSync
-                ? { sinceDate: twoMonthsAgo, blockedFolders }
-                : { sinceDate: new Date(account.lastSyncAt.getTime() - 60 * 60 * 1000), blockedFolders };
-            console.log(`[sync-all] ${isFirstSync ? 'Vollsync (letzte 2 Monate)' : 'Deltasync'} für ${account.email}`);
-            const emails = await (0, imap_1.fetchEmails)({ host: account.imapHost, port: account.imapPort, username: account.username, password }, fetchOptions);
-            return { account, emails };
+        }));
+        const allUnprocessed = [];
+        for (const { account, emails } of accountEmailsList) {
+            const unprocessed = await getUnprocessedEmails(emails, userId, account.id);
+            for (const u of unprocessed) {
+                allUnprocessed.push({ ...u, accountId: account.id });
+            }
         }
-        catch (err) {
-            console.error(`[sync-all] Fehler beim Abrufen von ${account.email}:`, err);
-            return { account, emails: [], error: extractSyncError(err) };
+        // ── Phase 3: Einziger Batch-Request an GPT für alle E-Mails ───────────────
+        const analysisMap = allUnprocessed.length > 0
+            ? await (0, openai_1.analyzeEmailsBatch)(allUnprocessed.map(u => u.email))
+            : new Map();
+        console.log(`[sync-all] Batch abgeschlossen: ${analysisMap.size}/${allUnprocessed.length} Ergebnisse`);
+        // ── Phase 4: Ergebnisse speichern & Accounts aktualisieren ─────────────────
+        const counters = new Map();
+        for (const { email, rawEmailId, accountId } of allUnprocessed) {
+            const orderInfo = analysisMap.get(email.uid) ?? { isOrder: false };
+            try {
+                const result = await applyOrderInfo(email, rawEmailId, orderInfo, userId, accountId);
+                if (!counters.has(accountId))
+                    counters.set(accountId, { newOrders: 0, mergedOrders: 0 });
+                const c = counters.get(accountId);
+                if (result === 'new')
+                    c.newOrders++;
+                if (result === 'merged')
+                    c.mergedOrders++;
+            }
+            catch (err) {
+                console.error(`[sync-all] Fehler beim Speichern:`, err);
+            }
         }
-    }));
-    const allUnprocessed = [];
-    for (const { account, emails } of accountEmailsList) {
-        const unprocessed = await getUnprocessedEmails(emails, userId, account.id);
-        for (const u of unprocessed) {
-            allUnprocessed.push({ ...u, accountId: account.id });
+        const syncedAt = new Date();
+        const results = [];
+        for (const { account, error } of accountEmailsList) {
+            if (error) {
+                results.push({ accountId: account.id, email: account.email, error });
+                continue;
+            }
+            await prisma.emailAccount.update({ where: { id: account.id }, data: { lastSyncAt: syncedAt } });
+            const c = counters.get(account.id) ?? { newOrders: 0, mergedOrders: 0 };
+            results.push({ accountId: account.id, email: account.email, ...c });
         }
+        await (0, orders_1.deduplicateOrders)(userId).catch(() => { });
+        return res.json({ results });
     }
-    // ── Phase 3: Einziger Batch-Request an GPT für alle E-Mails ───────────────
-    const analysisMap = allUnprocessed.length > 0
-        ? await (0, openai_1.analyzeEmailsBatch)(allUnprocessed.map(u => u.email))
-        : new Map();
-    console.log(`[sync-all] Batch abgeschlossen: ${analysisMap.size}/${allUnprocessed.length} Ergebnisse`);
-    // ── Phase 4: Ergebnisse speichern & Accounts aktualisieren ─────────────────
-    const counters = new Map();
-    for (const { email, rawEmailId, accountId } of allUnprocessed) {
-        const orderInfo = analysisMap.get(email.uid) ?? { isOrder: false };
-        try {
-            const result = await applyOrderInfo(email, rawEmailId, orderInfo, userId, accountId);
-            if (!counters.has(accountId))
-                counters.set(accountId, { newOrders: 0, mergedOrders: 0 });
-            const c = counters.get(accountId);
-            if (result === 'new')
-                c.newOrders++;
-            if (result === 'merged')
-                c.mergedOrders++;
-        }
-        catch (err) {
-            console.error(`[sync-all] Fehler beim Speichern:`, err);
-        }
+    catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: extractSyncError(err) });
     }
-    const syncedAt = new Date();
-    const results = [];
-    for (const { account, error } of accountEmailsList) {
-        if (error) {
-            results.push({ accountId: account.id, email: account.email, error });
-            continue;
-        }
-        await prisma.emailAccount.update({ where: { id: account.id }, data: { lastSyncAt: syncedAt } });
-        const c = counters.get(account.id) ?? { newOrders: 0, mergedOrders: 0 };
-        results.push({ accountId: account.id, email: account.email, ...c });
+    finally {
+        lock.release();
     }
-    await (0, orders_1.deduplicateOrders)(userId).catch(() => { });
-    return res.json({ results });
 });
 /**
  * Führt einen Delta-Sync für alle E-Mail-Accounts eines Nutzers durch.
  * Wird vom automatischen stündlichen Poller aufgerufen.
+ *
+ * Wird automatisch übersprungen, wenn der Nutzer bereits einen Sync laufen
+ * hat oder die globale Parallel-Grenze erreicht ist.
  */
 async function syncUserAccounts(userId) {
+    const lock = (0, syncLock_1.tryAcquireSyncLock)(userId);
+    if (!lock.ok) {
+        if (lock.reason === 'busy_user') {
+            console.log(`[auto-sync] Nutzer ${userId} hat bereits einen laufenden Sync – übersprungen.`);
+        }
+        else {
+            console.log(`[auto-sync] Globale Parallel-Grenze (${syncLock_1.MAX_PARALLEL_USERS}) erreicht – Nutzer ${userId} übersprungen.`);
+        }
+        return { newOrders: 0, mergedOrders: 0 };
+    }
+    try {
+        return await runSyncForUser(userId);
+    }
+    finally {
+        lock.release();
+    }
+}
+async function runSyncForUser(userId) {
     const accounts = await prisma.emailAccount.findMany({ where: { userId } });
     if (accounts.length === 0)
         return { newOrders: 0, mergedOrders: 0 };

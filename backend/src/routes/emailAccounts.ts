@@ -4,10 +4,30 @@ import { z } from 'zod';
 import { requireAuth, requirePayment, AuthRequest } from '../middleware/auth';
 import { fetchEmails, listFolders, testImapConnection, FIREWALL_HINT } from '../services/imap';
 import { analyzeEmailsBatch, OrderInfo } from '../services/openai';
+import {
+  tryAcquireSyncLock,
+  isUserSyncing,
+  MAX_PARALLEL_USERS,
+  LockReason,
+} from '../services/syncLock';
 import { deduplicateOrders } from './orders';
 
 const router = Router();
 const prisma = new PrismaClient();
+
+/** Antwort, wenn ein Sync-Lock nicht erworben werden konnte. */
+function syncLockResponse(res: Response, reason: LockReason) {
+  if (reason === 'busy_user') {
+    return res.status(409).json({
+      error: 'Es läuft bereits ein Sync für deinen Account. Bitte warte, bis er abgeschlossen ist.',
+      code: 'sync_in_progress',
+    });
+  }
+  return res.status(503).json({
+    error: `Aktuell synchronisieren bereits ${MAX_PARALLEL_USERS} Nutzer gleichzeitig. Bitte versuche es in wenigen Minuten erneut.`,
+    code: 'sync_capacity_reached',
+  });
+}
 
 /** Liest aus einem imapflow-Fehler (inkl. AggregateError) eine lesbare Fehlermeldung */
 function extractSyncError(err: unknown): string {
@@ -445,10 +465,13 @@ router.patch('/:id', requireAuth, requirePayment, async (req: AuthRequest, res: 
 
 // POST /api/email-accounts/:id/sync
 router.post('/:id/sync', requireAuth, requirePayment, async (req: AuthRequest, res: Response) => {
-  try {
-    const accountId = String(req.params.id);
-    const userId = String(req.user!.id);
+  const accountId = String(req.params.id);
+  const userId = String(req.user!.id);
 
+  const lock = tryAcquireSyncLock(userId);
+  if (!lock.ok) return syncLockResponse(res, lock.reason);
+
+  try {
     const account = await prisma.emailAccount.findFirst({
       where: { id: accountId, userId },
     });
@@ -513,16 +536,21 @@ router.post('/:id/sync', requireAuth, requirePayment, async (req: AuthRequest, r
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: extractSyncError(err) });
+  } finally {
+    lock.release();
   }
 });
 
 // POST /api/email-accounts/:id/resync
 // Setzt alle verarbeiteten E-Mails zurück und startet einen kompletten Neusync
 router.post('/:id/resync', requireAuth, requirePayment, async (req: AuthRequest, res: Response) => {
-  try {
-    const accountId = String(req.params.id);
-    const userId = String(req.user!.id);
+  const accountId = String(req.params.id);
+  const userId = String(req.user!.id);
 
+  const lock = tryAcquireSyncLock(userId);
+  if (!lock.ok) return syncLockResponse(res, lock.reason);
+
+  try {
     const account = await prisma.emailAccount.findFirst({ where: { id: accountId, userId } });
     if (!account) return res.status(404).json({ error: 'Konto nicht gefunden' });
 
@@ -578,6 +606,8 @@ router.post('/:id/resync', requireAuth, requirePayment, async (req: AuthRequest,
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: extractSyncError(err) });
+  } finally {
+    lock.release();
   }
 });
 
@@ -585,99 +615,131 @@ router.post('/:id/resync', requireAuth, requirePayment, async (req: AuthRequest,
 // Ablauf: 1) Alle Accounts abrufen  2) Alle E-Mails holen  3) Ein einziger Batch an GPT  4) Speichern
 router.post('/sync-all', requireAuth, requirePayment, async (req: AuthRequest, res: Response) => {
   const userId = String(req.user!.id);
-  const accounts = await prisma.emailAccount.findMany({ where: { userId } });
 
-  // ── Phase 1: E-Mails aus allen Accounts holen ──────────────────────────────
-  type AccountEmails = {
-    account: typeof accounts[number];
-    emails: EmailRecord[];
-    error?: string;
-  };
+  const lock = tryAcquireSyncLock(userId);
+  if (!lock.ok) return syncLockResponse(res, lock.reason);
 
-  const accountEmailsList: AccountEmails[] = await Promise.all(
-    accounts.map(async (account) => {
-      try {
-        const password = decryptPassword(account.passwordEncrypted);
-        let blockedFolders: string[] = [];
-        try { blockedFolders = JSON.parse(account.blockedFolders); } catch { blockedFolders = []; }
-        const isFirstSync = !account.lastSyncAt;
-        const twoMonthsAgo = new Date();
-        twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+  try {
+    const accounts = await prisma.emailAccount.findMany({ where: { userId } });
 
-        const fetchOptions = isFirstSync
-          ? { sinceDate: twoMonthsAgo, blockedFolders }
-          : { sinceDate: new Date(account.lastSyncAt!.getTime() - 60 * 60 * 1000), blockedFolders };
+    // ── Phase 1: E-Mails aus allen Accounts holen ──────────────────────────────
+    type AccountEmails = {
+      account: typeof accounts[number];
+      emails: EmailRecord[];
+      error?: string;
+    };
 
-        console.log(`[sync-all] ${isFirstSync ? 'Vollsync (letzte 2 Monate)' : 'Deltasync'} für ${account.email}`);
-        const emails = await fetchEmails(
-          { host: account.imapHost, port: account.imapPort, username: account.username, password },
-          fetchOptions,
-        );
-        return { account, emails };
-      } catch (err) {
-        console.error(`[sync-all] Fehler beim Abrufen von ${account.email}:`, err);
-        return { account, emails: [], error: extractSyncError(err) };
+    const accountEmailsList: AccountEmails[] = await Promise.all(
+      accounts.map(async (account) => {
+        try {
+          const password = decryptPassword(account.passwordEncrypted);
+          let blockedFolders: string[] = [];
+          try { blockedFolders = JSON.parse(account.blockedFolders); } catch { blockedFolders = []; }
+          const isFirstSync = !account.lastSyncAt;
+          const twoMonthsAgo = new Date();
+          twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+
+          const fetchOptions = isFirstSync
+            ? { sinceDate: twoMonthsAgo, blockedFolders }
+            : { sinceDate: new Date(account.lastSyncAt!.getTime() - 60 * 60 * 1000), blockedFolders };
+
+          console.log(`[sync-all] ${isFirstSync ? 'Vollsync (letzte 2 Monate)' : 'Deltasync'} für ${account.email}`);
+          const emails = await fetchEmails(
+            { host: account.imapHost, port: account.imapPort, username: account.username, password },
+            fetchOptions,
+          );
+          return { account, emails };
+        } catch (err) {
+          console.error(`[sync-all] Fehler beim Abrufen von ${account.email}:`, err);
+          return { account, emails: [], error: extractSyncError(err) };
+        }
+      }),
+    );
+
+    // ── Phase 2: Unverarbeitete E-Mails über alle Accounts filtern ─────────────
+    type UnprocessedItem = { email: EmailRecord; rawEmailId: string; accountId: string };
+    const allUnprocessed: UnprocessedItem[] = [];
+
+    for (const { account, emails } of accountEmailsList) {
+      const unprocessed = await getUnprocessedEmails(emails, userId, account.id);
+      for (const u of unprocessed) {
+        allUnprocessed.push({ ...u, accountId: account.id });
       }
-    }),
-  );
-
-  // ── Phase 2: Unverarbeitete E-Mails über alle Accounts filtern ─────────────
-  type UnprocessedItem = { email: EmailRecord; rawEmailId: string; accountId: string };
-  const allUnprocessed: UnprocessedItem[] = [];
-
-  for (const { account, emails } of accountEmailsList) {
-    const unprocessed = await getUnprocessedEmails(emails, userId, account.id);
-    for (const u of unprocessed) {
-      allUnprocessed.push({ ...u, accountId: account.id });
     }
-  }
 
-  // ── Phase 3: Einziger Batch-Request an GPT für alle E-Mails ───────────────
-  const analysisMap = allUnprocessed.length > 0
-    ? await analyzeEmailsBatch(allUnprocessed.map(u => u.email))
-    : new Map<string, import('../services/openai').OrderInfo>();
+    // ── Phase 3: Einziger Batch-Request an GPT für alle E-Mails ───────────────
+    const analysisMap = allUnprocessed.length > 0
+      ? await analyzeEmailsBatch(allUnprocessed.map(u => u.email))
+      : new Map<string, import('../services/openai').OrderInfo>();
 
-  console.log(`[sync-all] Batch abgeschlossen: ${analysisMap.size}/${allUnprocessed.length} Ergebnisse`);
+    console.log(`[sync-all] Batch abgeschlossen: ${analysisMap.size}/${allUnprocessed.length} Ergebnisse`);
 
-  // ── Phase 4: Ergebnisse speichern & Accounts aktualisieren ─────────────────
-  const counters = new Map<string, { newOrders: number; mergedOrders: number }>();
+    // ── Phase 4: Ergebnisse speichern & Accounts aktualisieren ─────────────────
+    const counters = new Map<string, { newOrders: number; mergedOrders: number }>();
 
-  for (const { email, rawEmailId, accountId } of allUnprocessed) {
-    const orderInfo = analysisMap.get(email.uid) ?? { isOrder: false };
-    try {
-      const result = await applyOrderInfo(email, rawEmailId, orderInfo, userId, accountId);
-      if (!counters.has(accountId)) counters.set(accountId, { newOrders: 0, mergedOrders: 0 });
-      const c = counters.get(accountId)!;
-      if (result === 'new') c.newOrders++;
-      if (result === 'merged') c.mergedOrders++;
-    } catch (err) {
-      console.error(`[sync-all] Fehler beim Speichern:`, err);
+    for (const { email, rawEmailId, accountId } of allUnprocessed) {
+      const orderInfo = analysisMap.get(email.uid) ?? { isOrder: false };
+      try {
+        const result = await applyOrderInfo(email, rawEmailId, orderInfo, userId, accountId);
+        if (!counters.has(accountId)) counters.set(accountId, { newOrders: 0, mergedOrders: 0 });
+        const c = counters.get(accountId)!;
+        if (result === 'new') c.newOrders++;
+        if (result === 'merged') c.mergedOrders++;
+      } catch (err) {
+        console.error(`[sync-all] Fehler beim Speichern:`, err);
+      }
     }
-  }
 
-  const syncedAt = new Date();
-  const results = [];
+    const syncedAt = new Date();
+    const results = [];
 
-  for (const { account, error } of accountEmailsList) {
-    if (error) {
-      results.push({ accountId: account.id, email: account.email, error });
-      continue;
+    for (const { account, error } of accountEmailsList) {
+      if (error) {
+        results.push({ accountId: account.id, email: account.email, error });
+        continue;
+      }
+      await prisma.emailAccount.update({ where: { id: account.id }, data: { lastSyncAt: syncedAt } });
+      const c = counters.get(account.id) ?? { newOrders: 0, mergedOrders: 0 };
+      results.push({ accountId: account.id, email: account.email, ...c });
     }
-    await prisma.emailAccount.update({ where: { id: account.id }, data: { lastSyncAt: syncedAt } });
-    const c = counters.get(account.id) ?? { newOrders: 0, mergedOrders: 0 };
-    results.push({ accountId: account.id, email: account.email, ...c });
+
+    await deduplicateOrders(userId).catch(() => {});
+
+    return res.json({ results });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: extractSyncError(err) });
+  } finally {
+    lock.release();
   }
-
-  await deduplicateOrders(userId).catch(() => {});
-
-  return res.json({ results });
 });
 
 /**
  * Führt einen Delta-Sync für alle E-Mail-Accounts eines Nutzers durch.
  * Wird vom automatischen stündlichen Poller aufgerufen.
+ *
+ * Wird automatisch übersprungen, wenn der Nutzer bereits einen Sync laufen
+ * hat oder die globale Parallel-Grenze erreicht ist.
  */
 export async function syncUserAccounts(userId: string): Promise<{ newOrders: number; mergedOrders: number }> {
+  const lock = tryAcquireSyncLock(userId);
+  if (!lock.ok) {
+    if (lock.reason === 'busy_user') {
+      console.log(`[auto-sync] Nutzer ${userId} hat bereits einen laufenden Sync – übersprungen.`);
+    } else {
+      console.log(`[auto-sync] Globale Parallel-Grenze (${MAX_PARALLEL_USERS}) erreicht – Nutzer ${userId} übersprungen.`);
+    }
+    return { newOrders: 0, mergedOrders: 0 };
+  }
+
+  try {
+    return await runSyncForUser(userId);
+  } finally {
+    lock.release();
+  }
+}
+
+async function runSyncForUser(userId: string): Promise<{ newOrders: number; mergedOrders: number }> {
   const accounts = await prisma.emailAccount.findMany({ where: { userId } });
   if (accounts.length === 0) return { newOrders: 0, mergedOrders: 0 };
 

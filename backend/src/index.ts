@@ -7,8 +7,10 @@ import emailAccountRoutes from './routes/emailAccounts';
 import orderRoutes from './routes/orders';
 import stripeRoutes from './routes/stripe';
 import attachmentRoutes from './routes/attachments';
+import pushRoutes from './routes/push';
 import { startTrackingPoller } from './services/tracking/poller';
 import { startEmailPoller } from './services/emailPoller';
+import { initPushService } from './services/push';
 
 const prisma = new PrismaClient();
 
@@ -67,6 +69,7 @@ app.use('/api/email-accounts', emailAccountRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/stripe', stripeRoutes);
 app.use('/api/attachments', attachmentRoutes);
+app.use('/api/push', pushRoutes);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -118,6 +121,7 @@ async function backfillOrderEmails(): Promise<void> {
 app.listen(PORT, async () => {
   console.log(`Server läuft auf Port ${PORT}`);
   await backfillOrderEmails();
+  initPushService();
   startTrackingPoller();
   startEmailPoller();
 });

@@ -1,11 +1,23 @@
 import { PrismaClient } from '@prisma/client';
 import { getTrackingInfo } from '../tracking';
 import { dedupeEvents } from './normalization';
+import { sendPushToUser } from '../push';
 
 const prisma = new PrismaClient();
 
 // Nur Bestellungen im Versand werden stündlich aktualisiert
 const POLL_STATUSES = ['in transit'];
+
+/** Menschlich lesbarer Text für einen Bestellstatus */
+function statusLabel(status: string): string {
+  const map: Record<string, string> = {
+    'processing':     'In Bearbeitung',
+    'in transit':     'Unterwegs',
+    'in packstation': 'In Packstation',
+    'delivered':      'Zugestellt',
+  };
+  return map[status] ?? status;
+}
 
 async function refreshOrderTracking(orderId: string): Promise<void> {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
@@ -13,6 +25,7 @@ async function refreshOrderTracking(orderId: string): Promise<void> {
 
   const result = await getTrackingInfo(order.trackingNumber, order.carrier);
   const uniqueEvents = dedupeEvents(result.events);
+  const previousStatus = order.status;
 
   await prisma.$transaction(async (tx) => {
     await tx.trackingEvent.deleteMany({ where: { orderId } });
@@ -35,6 +48,26 @@ async function refreshOrderTracking(orderId: string): Promise<void> {
       },
     });
   });
+
+  // Push-Benachrichtigung bei Statuswechsel verschicken (Fehler nicht weiterwerfen,
+  // damit das Polling-Ergebnis erhalten bleibt).
+  if (previousStatus !== result.status) {
+    try {
+      await sendPushToUser(order.userId, {
+        title: `${order.shop}: ${statusLabel(result.status)}`,
+        body: result.status === 'delivered'
+          ? `Deine Bestellung bei ${order.shop} wurde zugestellt.`
+          : result.status === 'in packstation'
+          ? `Deine Bestellung bei ${order.shop} liegt in einer Packstation bereit.`
+          : `Status hat sich auf "${statusLabel(result.status)}" geändert.`,
+        url: `/orders/${order.id}`,
+        tag: `order-${order.id}`,
+        data: { orderId: order.id, status: result.status },
+      });
+    } catch (err) {
+      console.error('[tracking-poller] Push-Versand fehlgeschlagen:', (err as Error).message);
+    }
+  }
 }
 
 async function runTrackingPoll(): Promise<void> {

@@ -201,15 +201,9 @@ export async function analyzeEmailForOrder(email: EmailMessage): Promise<OrderIn
       });
 
       const text = response.choices[0]?.message?.content?.trim();
-      console.log(`\n── GPT Einzel-Antwort [${email.uid}] ──`);
-      console.log(text ?? '(kein Inhalt)');
       if (text) {
         const parsed = parseOrderInfoJson(text);
-        if (parsed) {
-          console.log('✓ Parsed:', JSON.stringify(parsed));
-          return parsed;
-        }
-        console.warn('✗ JSON-Parse fehlgeschlagen');
+        if (parsed) return parsed;
       }
     } catch (err) {
       console.error('OpenAI-Fehler, verwende Fallback:', err);
@@ -351,23 +345,16 @@ export async function analyzeEmailsBatch(
         const content: string | undefined =
           item.response?.body?.choices?.[0]?.message?.content?.trim();
 
-        // GPT-Antwort auf der Konsole ausgeben
-        console.log(`\n── GPT Antwort [${originalUid}] ──`);
-        console.log(content ?? '(kein Inhalt)');
-
         if (content) {
           const parsed = parseOrderInfoJson(content);
           if (parsed) {
-            console.log('✓ Parsed:', JSON.stringify(parsed));
             results.set(originalUid, parsed);
           } else {
-            console.warn(`✗ JSON-Parse fehlgeschlagen:`, content.slice(0, 300));
             parseErrors++;
           }
         }
-      } catch (lineErr) {
+      } catch {
         parseErrors++;
-        console.warn('Batch-Zeile konnte nicht geparst werden:', lineErr);
       }
     }
 

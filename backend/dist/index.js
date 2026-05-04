@@ -12,8 +12,10 @@ const emailAccounts_1 = __importDefault(require("./routes/emailAccounts"));
 const orders_1 = __importDefault(require("./routes/orders"));
 const stripe_1 = __importDefault(require("./routes/stripe"));
 const attachments_1 = __importDefault(require("./routes/attachments"));
+const push_1 = __importDefault(require("./routes/push"));
 const poller_1 = require("./services/tracking/poller");
 const emailPoller_1 = require("./services/emailPoller");
+const push_2 = require("./services/push");
 const prisma = new client_1.PrismaClient();
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3001;
@@ -67,6 +69,7 @@ app.use('/api/email-accounts', emailAccounts_1.default);
 app.use('/api/orders', orders_1.default);
 app.use('/api/stripe', stripe_1.default);
 app.use('/api/attachments', attachments_1.default);
+app.use('/api/push', push_1.default);
 app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -112,6 +115,7 @@ async function backfillOrderEmails() {
 app.listen(PORT, async () => {
     console.log(`Server läuft auf Port ${PORT}`);
     await backfillOrderEmails();
+    (0, push_2.initPushService)();
     (0, poller_1.startTrackingPoller)();
     (0, emailPoller_1.startEmailPoller)();
 });

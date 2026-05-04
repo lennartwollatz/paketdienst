@@ -107,7 +107,53 @@ Ein **Mismatch** zwischen `VITE_API_URL` / relativer Basis und dem, was Nginx ro
 
 ---
 
-## 7. Bei Problemen
+## 7. Push-Benachrichtigungen (Web Push)
+
+Die App liefert per Service Worker (`public/sw.js`) und Web App Manifest
+(`public/manifest.webmanifest`) Push-Benachrichtigungen aus, sobald sich der
+Status einer Bestellung im Tracking-Poller ändert.
+
+1. **VAPID-Keys einmalig erzeugen** (auf einem beliebigen Rechner mit Node):
+
+   ```bash
+   cd backend
+   npx web-push generate-vapid-keys
+   ```
+
+2. In `backend/.env` eintragen:
+
+   ```env
+   VAPID_PUBLIC_KEY=<public-key>
+   VAPID_PRIVATE_KEY=<private-key>
+   VAPID_SUBJECT=mailto:admin@example.com
+   ```
+
+   Ohne Keys läuft die App weiter, beim Start wird im Log gewarnt
+   („Push-Benachrichtigungen sind deaktiviert“).
+
+3. **HTTPS Pflicht**: Service Worker, Push API und Notification API funktionieren
+   nur unter HTTPS (Ausnahme: `localhost`). Sicherstellen, dass die SPA über
+   HTTPS ausgeliefert wird.
+
+4. **Nginx**: Die Dateien `sw.js` und `manifest.webmanifest` werden aus dem
+   `dist/`-Ordner ausgeliefert wie jede andere statische Datei. Wichtig:
+   - `sw.js` darf **nicht** aggressiv gecached werden – idealerweise
+     `Cache-Control: no-cache` setzen, sonst sehen Nutzer Updates verzögert.
+   - Beim SPA-Fallback (`try_files $uri /paketdienst/index.html`) müssen
+     `sw.js`, `manifest.webmanifest` und die Icons als statische Dateien
+     ausgeliefert werden, nicht zur SPA umgeleitet.
+
+5. **iOS-Spezialfall**: Web Push klappt auf iOS nur, wenn der Nutzer die App
+   per *Zum Home-Bildschirm* installiert. Dann erst kann er in der App unter
+   *Einstellungen → Benachrichtigungen* die Berechtigung erteilen.
+
+6. **Nutzeraktivierung**: Im Frontend unter *Einstellungen → Benachrichtigungen*
+   den Button *Aktivieren* drücken. Test-Push über *Test* prüft den ganzen
+   Pfad (Browser → Backend → web-push → Push-Service → Browser).
+
+---
+
+## 8. Bei Problemen
 
 | Symptom | Typische Ursache |
 |--------|-------------------|
