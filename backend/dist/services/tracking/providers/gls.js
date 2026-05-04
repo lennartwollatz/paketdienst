@@ -22,24 +22,19 @@ class GlsTrackingProvider {
             throw new types_1.TrackingProviderError(this.providerName, 'auth', 'GLS API Key fehlt');
         }
         const url = `https://api.gls-group.eu/public/v1/shipments/${encodeURIComponent(trackingNumber)}/tracking`;
-        const data = await (0, types_2.fetchJsonWithTimeout)(url, {
-            method: 'GET',
-            headers: { Authorization: `Bearer ${String(process.env.GLS_API_KEY)}` },
-        }, Number(process.env.TRACKING_PROVIDER_TIMEOUT_MS || 12000), this.providerName);
-        const internalStatus = (0, normalization_1.normalizeCarrierStatus)(data.statusCode || data.statusText, GLS_STATUS_MAP);
-        const events = (0, normalization_1.dedupeEvents)((data.events || []).map((event) => ({
-            timestamp: new Date(event.timestamp),
-            location: event.location || '',
-            status: (0, normalization_1.internalStatusToLabel)((0, normalization_1.normalizeCarrierStatus)(event.statusCode || event.statusText, GLS_STATUS_MAP)),
-            description: event.description || event.statusText || 'Status-Update',
-        })));
-        return {
-            provider: this.providerName,
-            internalStatus,
-            status: (0, normalization_1.internalStatusToLabel)(internalStatus),
-            events,
-            estimatedDelivery: data.estimatedDelivery ? new Date(data.estimatedDelivery) : undefined,
-        };
+        const data = await (0, types_2.fetchJsonWithTimeout)(url, { method: 'GET', headers: { Authorization: `Bearer ${String(process.env.GLS_API_KEY)}` } }, Number(process.env.TRACKING_PROVIDER_TIMEOUT_MS || 12000), this.providerName);
+        let internalStatus = (0, normalization_1.normalizeCarrierStatus)(data.statusCode || data.statusText, GLS_STATUS_MAP);
+        const events = (0, normalization_1.dedupeEvents)((data.events || []).map((event) => {
+            const desc = event.description || event.statusText || 'Status-Update';
+            let evStatus = (0, normalization_1.normalizeCarrierStatus)(event.statusCode || event.statusText, GLS_STATUS_MAP);
+            if ((0, normalization_1.detectPackstationFromDescription)(desc))
+                evStatus = 'in_packstation';
+            return { timestamp: new Date(event.timestamp), location: event.location || '', status: (0, normalization_1.internalStatusToDb)(evStatus), description: desc };
+        }));
+        if ((0, normalization_1.detectPackstationFromDescription)(data.description || data.statusText || '')) {
+            internalStatus = 'in_packstation';
+        }
+        return { provider: this.providerName, internalStatus, status: (0, normalization_1.internalStatusToDb)(internalStatus), events, estimatedDelivery: data.estimatedDelivery ? new Date(data.estimatedDelivery) : undefined };
     }
 }
 exports.GlsTrackingProvider = GlsTrackingProvider;

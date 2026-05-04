@@ -15,6 +15,18 @@ const prisma = new PrismaClient();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+function isAllowedCorsOrigin(origin: string): boolean {
+  const allowedUrl = process.env.FRONTEND_URL?.trim();
+  if (!allowedUrl) return false;
+  if (origin === allowedUrl) return true;
+  try {
+    const requestOrigin = new URL(origin).origin;
+    return requestOrigin === new URL(allowedUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
 // ── Sicherheits-Header ────────────────────────────────────────────────────────
 app.use((_req, res, next) => {
   // Verhindert MIME-Type-Sniffing
@@ -35,10 +47,9 @@ app.use((_req, res, next) => {
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Alle Localhost-Ports erlauben (für Entwicklung mit wechselnden Vite-Ports)
     if (!origin || /^http:\/\/localhost(:\d+)?$/.test(origin)) {
       callback(null, true);
-    } else if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL) {
+    } else if (isAllowedCorsOrigin(origin)) {
       callback(null, true);
     } else {
       callback(new Error('CORS: Nicht erlaubter Origin'));

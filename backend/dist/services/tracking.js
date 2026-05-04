@@ -21,31 +21,31 @@ function generateMockTracking(trackingNumber) {
     return {
         provider: 'mock',
         internalStatus: 'in_transit',
-        status: 'In Transit',
+        status: 'in transit',
         estimatedDelivery: new Date(now.getTime() + 86400000),
         events: [
             {
                 timestamp: now,
                 location: 'Frankfurt, Deutschland',
-                status: 'In Transit',
+                status: 'in transit',
                 description: 'Paket im Verteilzentrum angekommen',
             },
             {
                 timestamp: yesterday,
                 location: 'München, Deutschland',
-                status: 'In Transit',
+                status: 'in transit',
                 description: 'Paket auf dem Weg zum nächsten Verteilzentrum',
             },
             {
                 timestamp: twoDaysAgo,
                 location: 'Hamburg, Deutschland',
-                status: 'In Transit',
+                status: 'in transit',
                 description: 'Paket beim Absender abgeholt',
             },
             {
                 timestamp: threeDaysAgo,
                 location: 'Online',
-                status: 'Informationen erhalten',
+                status: 'processing',
                 description: `Sendungsdaten für ${trackingNumber} empfangen`,
             },
         ],

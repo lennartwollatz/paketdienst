@@ -1,16 +1,22 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.INTERNAL_STATUS_LABELS = void 0;
+exports.INTERNAL_STATUS_TO_DB = void 0;
 exports.normalizeCarrierStatus = normalizeCarrierStatus;
-exports.internalStatusToLabel = internalStatusToLabel;
+exports.internalStatusToDb = internalStatusToDb;
+exports.detectPackstationFromDescription = detectPackstationFromDescription;
 exports.dedupeEvents = dedupeEvents;
-exports.INTERNAL_STATUS_LABELS = {
-    info_received: 'Informationen erhalten',
-    in_transit: 'In Transit',
-    out_for_delivery: 'Wird zugestellt',
-    delivered: 'Zugestellt',
-    exception: 'Ausnahme',
-    unknown: 'Unbekannt',
+/**
+ * Mapping von InternalTrackingStatus → Wert der in Order.status gespeichert wird.
+ * Muss mit den Schlüsseln in StatusBadge.tsx (Frontend) übereinstimmen.
+ */
+exports.INTERNAL_STATUS_TO_DB = {
+    info_received: 'processing',
+    in_transit: 'in transit',
+    out_for_delivery: 'in transit', // "Im Versand" – kein eigener Status mehr
+    in_packstation: 'in packstation',
+    delivered: 'delivered',
+    exception: 'in transit',
+    unknown: 'unknown',
 };
 function normalizeCarrierStatus(rawStatus, statusMap) {
     if (!rawStatus)
@@ -18,8 +24,16 @@ function normalizeCarrierStatus(rawStatus, statusMap) {
     const key = rawStatus.trim().toLowerCase();
     return statusMap[key] ?? 'unknown';
 }
-function internalStatusToLabel(status) {
-    return exports.INTERNAL_STATUS_LABELS[status] ?? exports.INTERNAL_STATUS_LABELS.unknown;
+/** Gibt den DB-Schlüssel zurück (z.B. "in transit", "delivered"). */
+function internalStatusToDb(status) {
+    return exports.INTERNAL_STATUS_TO_DB[status] ?? 'unknown';
+}
+/**
+ * Erkennt anhand von Keywords in der Beschreibung, ob es sich um
+ * einen Packstation-Event handelt.
+ */
+function detectPackstationFromDescription(description) {
+    return /packstation|paketstation|parcel\s*locker|abholstation|locker/i.test(description);
 }
 function dedupeEvents(events) {
     const seen = new Set();

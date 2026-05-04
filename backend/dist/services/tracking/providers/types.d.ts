@@ -8,6 +8,7 @@ export interface ProviderApiEvent {
 export interface ProviderApiResponse {
     statusCode?: string;
     statusText?: string;
+    description?: string;
     estimatedDelivery?: string;
     events?: ProviderApiEvent[];
 }
