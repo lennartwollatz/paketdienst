@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { resolveFrontendPublicUrl } from '../lib/frontendBase';
 
 const api = axios.create({
   baseURL: '/api',
@@ -19,10 +20,10 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      window.location.href = '/login';
+      window.location.href = resolveFrontendPublicUrl('/login');
     }
     if (error.response?.status === 402 && error.response?.data?.code === 'PAYMENT_REQUIRED') {
-      window.location.href = '/payment-setup';
+      window.location.href = resolveFrontendPublicUrl('/payment-setup');
     }
     return Promise.reject(error);
   }
