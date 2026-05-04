@@ -1,8 +1,8 @@
 import axios from 'axios';
-import { resolveFrontendPublicUrl } from '../lib/frontendBase';
+import { resolveApiBaseUrl, resolveFrontendPublicUrl } from '../lib/frontendBase';
 
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: resolveApiBaseUrl(),
   headers: { 'Content-Type': 'application/json' },
 });
 

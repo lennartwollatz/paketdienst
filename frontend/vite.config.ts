@@ -13,6 +13,12 @@ export default defineConfig({
   server: {
     port: 5177,
     proxy: {
+      // axios nutzt ohne VITE_API_URL …/paketdienst/api (siehe resolveApiBaseUrl)
+      '^/paketdienst/api': {
+        target: 'http://localhost:3003',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/paketdienst\/api/, '/api'),
+      },
       '/api': {
         target: 'http://localhost:3003',
         changeOrigin: true,
