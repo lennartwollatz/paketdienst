@@ -4,16 +4,17 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  base: '/paketdienst/',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
   },
   server: {
-    port: 5173,
+    port: 5177,
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: 'http://localhost:3003',
         changeOrigin: true,
       },
     },
