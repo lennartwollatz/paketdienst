@@ -5,12 +5,14 @@ import { format } from 'date-fns';
 import { de } from 'date-fns/locale';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '../store/authStore';
+import { useSyncStore } from '../store/syncStore';
 import { emailAccountsApi, EmailAccount } from '../api/emailAccounts';
 import { ordersApi } from '../api/orders';
 import { Order } from '../api/orders';
 import BottomNav from '../components/BottomNav';
 import EmailAccountCard from '../components/EmailAccountCard';
 import OrderCard from '../components/OrderCard';
+import DeliveryScheduleView from '../components/DeliveryScheduleView';
 import AddEmailAccountModal from '../components/AddEmailAccountModal';
 import SettingsModal from '../components/SettingsModal';
 import PushPromptBanner from '../components/PushPromptBanner';
@@ -28,15 +30,15 @@ export default function Home() {
   const [showAddEmail, setShowAddEmail] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
-  const loadEmailAccounts = useCallback(async () => {
-    setLoadingEmails(true);
+  const loadEmailAccounts = useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) setLoadingEmails(true);
     try {
       const { data } = await emailAccountsApi.getAll();
       setEmailAccounts(data);
     } catch {
       // silent
     } finally {
-      setLoadingEmails(false);
+      if (!options?.silent) setLoadingEmails(false);
     }
   }, []);
 
@@ -103,25 +105,30 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gray-50 pb-20">
-      {/* Tab Content */}
-      {activeTab === 'emails' ? (
+      {/* Tab Content – beide Tabs bleiben gemountet, damit laufende Syncs sichtbar bleiben */}
+      <div className={activeTab === 'emails' ? undefined : 'hidden'}>
         <EmailsTab
           accounts={emailAccounts}
           loading={loadingEmails}
           onAdd={() => setShowAddEmail(true)}
           onDelete={(id) => setEmailAccounts((prev) => prev.filter((a) => a.id !== id))}
           onSynced={async () => {
-            await Promise.all([loadOrders(), loadEmailAccounts()]);
+            const syncActive = useSyncStore.getState().syncingAccountId !== null;
+            await Promise.all([
+              loadOrders(),
+              loadEmailAccounts({ silent: syncActive }),
+            ]);
           }}
         />
-      ) : (
+      </div>
+      <div className={activeTab === 'orders' ? undefined : 'hidden'}>
         <OrdersTab
           orders={orders}
           loading={loadingOrders}
           onRefresh={loadOrders}
           onAddEmail={() => setActiveTab('emails')}
         />
-      )}
+      </div>
 
       {/* Bottom Nav */}
       <BottomNav
@@ -182,7 +189,7 @@ function EmailsTab({
         </button>
       </div>
 
-      {loading ? (
+      {loading && accounts.length === 0 ? (
         <div className="space-y-3">
           {[1, 2].map((i) => (
             <div key={i} className="card animate-pulse">
@@ -448,6 +455,12 @@ function OrdersTab({
           </button>
         </div>
       </div>
+
+      {!loading && orders.length > 0 && (
+        <div className="mb-3">
+          <DeliveryScheduleView orders={orders} hideWhenEmpty omitEmptyWeeks />
+        </div>
+      )}
 
       {/* Status-Filter – alle Chips gleichmäßig in einer Zeile */}
       {!loading && orders.length > 0 && visibleFilters.length > 1 && (

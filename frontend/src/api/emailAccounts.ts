@@ -37,6 +37,7 @@ export interface SyncProgressEvent {
   phase: SyncPhase;
   current: number;
   total: number;
+  /** Gesamtfortschritt des Balkens (0–100), gewichtet über alle Schritte. */
   percent: number;
   label: string;
 }

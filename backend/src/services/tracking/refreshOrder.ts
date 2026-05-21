@@ -69,7 +69,7 @@ export async function refreshOrderTracking(
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order?.trackingNumber) return false;
 
-  const result = await getTrackingInfo(order.trackingNumber);
+  const result = await getTrackingInfo(order.trackingNumber, order.carrier ?? undefined);
   const uniqueEvents = dedupeEvents(result.events);
   const previousStatus = order.status;
 
@@ -108,4 +108,17 @@ export async function refreshOrderTracking(
   }
 
   return true;
+}
+
+/** Tracking im Hintergrund starten (Fehler werden geloggt, Sync blockiert nicht). */
+export function scheduleOrderTrackingRefresh(
+  orderId: string,
+  options: { sendPush?: boolean } = {},
+): void {
+  void refreshOrderTracking(orderId, { sendPush: options.sendPush ?? false }).catch((err) => {
+    console.warn(
+      `[tracking] Tracking-Refresh für Bestellung ${orderId} fehlgeschlagen:`,
+      err instanceof Error ? err.message : err,
+    );
+  });
 }

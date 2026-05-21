@@ -6,6 +6,7 @@ import {
   ORDER_CATEGORY_IDS,
   type OrderCategoryId,
 } from '../constants/orderCategories';
+import { inferOrderCategory } from './orderCategoryInference';
 
 export interface OrderInfo {
   isOrder: boolean;
@@ -134,7 +135,7 @@ Extrahiere folgende Informationen:
 9. "deliveryAddress": Lieferadresse als einzeiliger String (Straße, PLZ Ort) – oder null wenn nicht angegeben.
 10. "currency": "EUR", "USD" oder "GBP".
 11. "orderDate": Bestelldatum im ISO-Format (YYYY-MM-DD) oder null.
-12. "category": Kategorie des Kaufs – genau eine ID aus dieser Liste (sonst null):
+12. "category": Kategorie des Kaufs – **Pflichtfeld für jede erkannte Bestellung**, sofern aus E-Mail oder Anhang erkennbar. Genau eine ID aus dieser Liste; nur null, wenn wirklich keine Zuordnung möglich ist (z. B. reine Versandbenachrichtigung ohne Produktbezug):
     klamotten, software_technik, kosmetik, essen, transport_logistik, freizeit_sport, auto, finanzen, gesundheit, haus_wohnen, urlaub
     – klamotten: Mode, Schuhe, Textilien
     – software_technik: Software, Apps, Hardware, Elektronik
@@ -238,13 +239,20 @@ function isPresentString(v: string | null | undefined): v is string {
   return typeof v === 'string' && v.trim().length > 0;
 }
 
+function ensureOrderCategory(email: EmailMessage, info: OrderInfo): OrderInfo {
+  if (!info.isOrder || info.category) return info;
+  const inferred = inferOrderCategory(info.shop, email.subject, email.text);
+  return inferred ? { ...info, category: inferred } : info;
+}
+
 /** Fehlen nach E-Mail-Analyse noch wichtige Bestelldaten? */
 function needsPdfSupplement(info: OrderInfo): boolean {
   if (!info.isOrder) return false;
   const shopMissing = !isPresentString(info.shop);
   const priceMissing = info.price == null || Number.isNaN(info.price);
   const addressMissing = !isPresentString(info.deliveryAddress);
-  return shopMissing || priceMissing || addressMissing;
+  const categoryMissing = !info.category;
+  return shopMissing || priceMissing || addressMissing || categoryMissing;
 }
 
 function listMissingFields(info: OrderInfo): string[] {
@@ -252,6 +260,7 @@ function listMissingFields(info: OrderInfo): string[] {
   if (!isPresentString(info.shop)) missing.push('shop (Händlername)');
   if (info.price == null || Number.isNaN(info.price)) missing.push('price (Gesamtbetrag)');
   if (!isPresentString(info.deliveryAddress)) missing.push('deliveryAddress (Lieferadresse)');
+  if (!info.category) missing.push('category (Kategorie des Kaufs)');
   return missing;
 }
 
@@ -401,14 +410,16 @@ export async function analyzeEmailForOrder(email: EmailMessage): Promise<OrderIn
       const text = response.choices[0]?.message?.content?.trim();
       if (text) {
         const parsed = parseOrderInfoJson(text);
-        if (parsed) return enrichOrderInfoFromPdfs(email, parsed);
+        if (parsed) {
+          return enrichOrderInfoFromPdfs(email, ensureOrderCategory(email, parsed));
+        }
       }
     } catch (err) {
       console.error('OpenAI-Fehler, verwende Fallback:', err);
     }
   }
 
-  return enrichOrderInfoFromPdfs(email, fallbackAnalysis(email));
+  return enrichOrderInfoFromPdfs(email, ensureOrderCategory(email, fallbackAnalysis(email)));
 }
 
 // ─── Batch-Analyse (Vollsync, ≥ BATCH_THRESHOLD E-Mails) ─────────────────────
@@ -555,7 +566,9 @@ export async function analyzeEmailsBatch(
         if (content) {
           const parsed = parseOrderInfoJson(content);
           if (parsed) {
-            results.set(originalUid, parsed);
+            const email = emailsToProcess.find(e => e.uid === originalUid);
+            const withCategory = email ? ensureOrderCategory(email, parsed) : parsed;
+            results.set(originalUid, withCategory);
           } else {
             parseErrors++;
           }

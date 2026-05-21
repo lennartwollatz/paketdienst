@@ -1,0 +1,22 @@
+# Kopiere diese Datei nach deploy.config und passe die Werte an:
+#   cp deploy.config.example deploy.config
+#
+# deploy.config wird nicht ins Git eingecheckt (server-spezifische Pfade).
+
+# Absoluter Pfad zum Git-Repository auf dem Server
+REPO_DIR="/home/DEIN_USER/paketdienst"
+
+# Zielordner für das gebaute Frontend (Nginx root/alias für /paketdienst/)
+FRONTEND_DEPLOY_DIR="/var/www/html/paketdienst"
+
+# Backend neu starten: systemd | pm2 | none
+BACKEND_RESTART_MODE="systemd"
+BACKEND_SERVICE_NAME="paketdienst-backend"
+PM2_APP_NAME="paketdienst"
+
+# Git-Branch, der deployed werden soll
+GIT_BRANCH="main"
+
+# Datenbank-Backups (relativ zu REPO_DIR oder absolut)
+BACKUP_DIR="${REPO_DIR}/backups"
+KEEP_BACKUPS=5

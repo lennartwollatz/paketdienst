@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { requireAuth, requirePayment, AuthRequest } from '../middleware/auth';
-import { refreshOrderTracking } from '../services/tracking/refreshOrder';
+import { refreshOrderTracking, scheduleOrderTrackingRefresh } from '../services/tracking/refreshOrder';
 import { TrackingProviderError, trackingErrorStatusCode } from '../services/tracking/types';
 import { isValidOrderCategory } from '../constants/orderCategories';
 import { deleteTrackingFromTrackingMore } from '../services/tracking/providers/trackingmore';
@@ -453,6 +453,16 @@ router.patch('/:id', requireAuth, requirePayment, async (req: AuthRequest, res: 
     void deleteTrackingFromTrackingMore(trackingNumber, {
       carrier: (updateData.carrier as string | null | undefined) ?? order.carrier,
     });
+  }
+
+  const trackingChanged =
+    'trackingNumber' in req.body
+    && (updateData.trackingNumber as string | null | undefined) !== order.trackingNumber;
+  const newTrackingNumber = trackingChanged
+    ? (updateData.trackingNumber as string | null | undefined)
+    : null;
+  if (newTrackingNumber && newStatus !== 'delivered') {
+    scheduleOrderTrackingRefresh(orderId);
   }
 
   return res.json({ ...updated, categoriesPropagated });

@@ -3,11 +3,10 @@ import { Mail, Trash2, RefreshCw, CheckCircle, Clock, FolderOpen } from 'lucide-
 import { formatDistanceToNow } from 'date-fns';
 import { de } from 'date-fns/locale';
 import toast from 'react-hot-toast';
-import { EmailAccount, emailAccountsApi, SyncProgressEvent } from '../api/emailAccounts';
+import { EmailAccount, emailAccountsApi } from '../api/emailAccounts';
 import FolderManagerModal from './FolderManagerModal';
 import SyncProgressBar from './SyncProgressBar';
-import { syncAccountWithProgress } from '../lib/syncProgress';
-import { buildLoadProgress } from '../lib/syncPercent';
+import { useAccountSyncState } from '../store/syncStore';
 
 const PROVIDER_ICONS: Record<string, string> = {
   gmail: '📧',
@@ -27,71 +26,16 @@ interface EmailAccountCardProps {
 }
 
 export default function EmailAccountCard({ account, onDelete, onSynced }: EmailAccountCardProps) {
-  const [syncing, setSyncing] = useState(false);
+  const { isSyncing, isAnySyncRunning, progress, startSync } = useAccountSyncState(account.id);
   const [deleting, setDeleting] = useState(false);
   const [showFolderManager, setShowFolderManager] = useState(false);
-  const [syncProgress, setSyncProgress] = useState<SyncProgressEvent | null>(null);
 
-  const runSyncWithProgress = async () => {
-    const phaseState = {
-      fetch:    { current: 0, total: 0 },
-      analyze:  { current: 0, total: 0 },
-      tracking: { current: 0, total: 0 },
-      load:     { current: 0, total: 0 },
-    };
-
-    await syncAccountWithProgress(account.id, {
-      onProgress: (event) => {
-        phaseState[event.phase] = { current: event.current, total: event.total };
-        setSyncProgress(event);
-      },
-      onComplete: async (result) => {
-        const loading = buildLoadProgress(phaseState, 0, 1);
-        setSyncProgress({
-          phase: 'load',
-          current: 0,
-          total: 1,
-          percent: loading.percent,
-          label: 'Bestellungen werden geladen…',
-        });
-        await onSynced();
-        const done = buildLoadProgress(phaseState, 1, 1);
-        setSyncProgress({
-          phase: 'load',
-          current: 1,
-          total: 1,
-          percent: done.percent,
-          label: 'Fertig',
-        });
-        toast.success(result.message);
-      },
-      onError: (message) => {
-        toast.error(message);
-      },
-    });
-  };
-
-  const handleSync = async () => {
-    setSyncing(true);
-    setSyncProgress({
-      phase: 'fetch',
-      current: 0,
-      total: 1,
-      percent: 0,
-      label: 'Synchronisation wird gestartet…',
-    });
-    try {
-      await runSyncWithProgress();
-    } catch {
-      toast.error('Sync fehlgeschlagen');
-    } finally {
-      setSyncing(false);
-      setSyncProgress(null);
-    }
+  const handleSync = () => {
+    void startSync(account.id, onSynced);
   };
 
   const handleFoldersSaved = () => {
-    onSynced(); // Liste neu laden, damit blockedFolders aktuell ist
+    onSynced();
   };
 
   const handleDelete = async () => {
@@ -145,22 +89,30 @@ export default function EmailAccountCard({ account, onDelete, onSynced }: EmailA
             )}
           </div>
 
-          {syncing && syncProgress && (
-            <SyncProgressBar progress={syncProgress} />
+          {isSyncing && (
+            <SyncProgressBar
+              progress={progress ?? {
+                phase: 'fetch',
+                current: 0,
+                total: 1,
+                percent: 0,
+                label: 'Synchronisation läuft…',
+              }}
+            />
           )}
 
           <div className="flex gap-2 mt-3">
             <button
               onClick={handleSync}
-              disabled={syncing}
+              disabled={isAnySyncRunning}
               className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 bg-blue-50 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-100 active:bg-blue-200 transition-colors disabled:opacity-50"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
-              {syncing ? 'Lädt...' : 'Synchronisieren'}
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+              {isSyncing ? 'Lädt...' : 'Synchronisieren'}
             </button>
             <button
               onClick={() => setShowFolderManager(true)}
-              disabled={syncing}
+              disabled={isAnySyncRunning}
               title="Ordner verwalten – gesperrte Ordner werden nicht synchronisiert"
               className="flex items-center justify-center p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 active:bg-indigo-200 transition-colors disabled:opacity-50"
             >
@@ -168,7 +120,7 @@ export default function EmailAccountCard({ account, onDelete, onSynced }: EmailA
             </button>
             <button
               onClick={handleDelete}
-              disabled={deleting || syncing}
+              disabled={deleting || isAnySyncRunning}
               className="flex items-center justify-center p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-100 active:bg-red-200 transition-colors disabled:opacity-50"
             >
               <Trash2 className="w-4 h-4" />

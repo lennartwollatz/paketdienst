@@ -16,6 +16,8 @@ import { runAccountSyncWithProgress } from '../services/accountSync';
 import type { SyncProgressPayload } from '../services/syncProgress';
 import { deleteTrackingFromTrackingMore } from '../services/tracking/providers/trackingmore';
 import { resolveOrderCategory } from '../services/shopCategory';
+import { inferOrderCategory } from '../services/orderCategoryInference';
+import { scheduleOrderTrackingRefresh } from '../services/tracking/refreshOrder';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -188,8 +190,15 @@ async function findExistingOrder(userId: string, orderInfo: OrderInfo) {
   return null;
 }
 
+/** Kategorie aus GPT oder regelbasiertem Fallback (nur wenn zuordenbar). */
+function categoryFromAnalysis(orderInfo: OrderInfo, email: EmailRecord): string | null {
+  return orderInfo.category
+    ?? inferOrderCategory(orderInfo.shop, email.subject, email.text)
+    ?? null;
+}
+
 /** Baut den GPT-Daten-Block für einen OrderEmail-Datensatz */
-function gptFields(orderInfo: OrderInfo) {
+function gptFields(orderInfo: OrderInfo, email: EmailRecord) {
   return {
     gptShop:              orderInfo.shop              ?? null,
     gptPrice:             orderInfo.price             ?? null,
@@ -201,7 +210,7 @@ function gptFields(orderInfo: OrderInfo) {
     gptDeliveryAddress:   orderInfo.deliveryAddress   ?? null,
     gptCurrency:          orderInfo.currency          ?? null,
     gptOrderDate:         orderInfo.orderDate         ? new Date(orderInfo.orderDate) : null,
-    gptCategory:          orderInfo.category          ?? null,
+    gptCategory:          categoryFromAnalysis(orderInfo, email),
   };
 }
 
@@ -255,7 +264,7 @@ async function applyOrderInfo(
     const mergedCategory = await resolveOrderCategory(
       userId,
       mergedShopForCategory,
-      orderInfo.category ?? null,
+      categoryFromAnalysis(orderInfo, email),
       { category: duplicate.category, categoryManual: duplicate.categoryManual },
     );
 
@@ -288,7 +297,7 @@ async function applyOrderInfo(
         receivedAt: email.date,
         bodyText:   email.text || null,
         bodyHtml:   email.html ?? null,
-        ...gptFields(orderInfo),
+        ...gptFields(orderInfo, email),
       },
     });
 
@@ -308,12 +317,21 @@ async function applyOrderInfo(
       void deleteTrackingFromTrackingMore(mergedTracking, { carrier: mergedCarrier });
     }
 
+    const gainedTracking = !duplicate.trackingNumber && !!mergedTracking;
+    if (gainedTracking && mergedStatus !== 'delivered') {
+      scheduleOrderTrackingRefresh(duplicate.id);
+    }
+
     return 'merged';
   }
 
   // Neue Bestellung anlegen
   const newShop = orderInfo.shop || 'Unbekannt';
-  const newCategory = await resolveOrderCategory(userId, newShop, orderInfo.category ?? null);
+  const newCategory = await resolveOrderCategory(
+    userId,
+    newShop,
+    categoryFromAnalysis(orderInfo, email),
+  );
 
   const order = await prisma.order.create({
     data: {
@@ -342,7 +360,7 @@ async function applyOrderInfo(
           receivedAt: email.date,
           bodyText:   email.text || null,
           bodyHtml:   email.html || null,
-          ...gptFields(orderInfo),
+          ...gptFields(orderInfo, email),
         },
       },
     },
@@ -370,6 +388,10 @@ async function applyOrderInfo(
     orderNumber: order.orderNumber,
     trackingNumber: order.trackingNumber,
   });
+
+  if (order.trackingNumber && order.status !== 'delivered') {
+    scheduleOrderTrackingRefresh(order.id);
+  }
 
   return 'new';
 }

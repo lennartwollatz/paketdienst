@@ -5,6 +5,7 @@ import { de } from 'date-fns/locale';
 import { Order } from '../api/orders';
 import StatusBadge from './StatusBadge';
 import CategoryChip from './CategoryChip';
+import { orderDeliveryDisplayDate } from '../lib/orderDates';
 
 interface OrderCardProps {
   order: Order;
@@ -13,6 +14,7 @@ interface OrderCardProps {
 export default function OrderCard({ order }: OrderCardProps) {
   const navigate = useNavigate();
   const latestEvent = order.trackingEvents?.[0];
+  const displayDate = orderDeliveryDisplayDate(order);
 
   return (
     <button
@@ -47,9 +49,9 @@ export default function OrderCard({ order }: OrderCardProps) {
 
           <div className="flex items-center justify-between mt-2">
             <span className="text-xs text-gray-400">
-              {order.orderDate
-                ? format(new Date(order.orderDate), 'd. MMM yyyy', { locale: de })
-                : 'Datum unbekannt'}
+              {displayDate
+                ? format(displayDate, 'd. MMM yyyy', { locale: de })
+                : 'Lieferdatum unbekannt'}
             </span>
             {order.price != null && (
               <span className="text-sm font-semibold text-gray-700">
@@ -57,12 +59,6 @@ export default function OrderCard({ order }: OrderCardProps) {
               </span>
             )}
           </div>
-
-          {order.trackingNumber && (
-            <p className="text-xs text-gray-400 mt-1 font-mono truncate">
-              {order.trackingNumber}
-            </p>
-          )}
         </div>
       </div>
     </button>

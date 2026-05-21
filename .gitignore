@@ -1,5 +1,7 @@
 node_modules/
 .env
+deploy.config
+backups/
 backend/dev.db
 backend/dev.db-journal
 backend/prod.db

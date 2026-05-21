@@ -1,4 +1,5 @@
 import type { SyncProgressEvent } from '../api/emailAccounts';
+import { getPhaseSharePercent } from '../lib/syncPercent';
 
 const PHASE_COLORS: Record<SyncProgressEvent['phase'], string> = {
   fetch:    'bg-sky-500',
@@ -13,19 +14,21 @@ interface Props {
 
 export default function SyncProgressBar({ progress }: Props) {
   const barColor = PHASE_COLORS[progress.phase] ?? 'bg-blue-500';
+  const phaseShare = getPhaseSharePercent(progress.phase);
+  const barFill = Math.min(100, Math.max(0, progress.percent));
 
   return (
     <div className="mb-3 rounded-xl border border-blue-100 bg-blue-50/80 px-3 py-2.5">
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <p className="text-xs font-medium text-blue-900 truncate">{progress.label}</p>
         <span className="text-xs font-semibold text-blue-700 tabular-nums flex-shrink-0">
-          {progress.percent}%
+          {phaseShare}%
         </span>
       </div>
       <div className="h-2 w-full overflow-hidden rounded-full bg-blue-100">
         <div
           className={`h-full rounded-full transition-all duration-300 ease-out ${barColor}`}
-          style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }}
+          style={{ width: `${barFill}%` }}
         />
       </div>
       {progress.total > 0 && (
