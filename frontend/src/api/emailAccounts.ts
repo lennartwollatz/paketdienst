@@ -31,6 +31,24 @@ export interface ProviderDefaults {
   [key: string]: { host: string; port: number };
 }
 
+export type SyncPhase = 'fetch' | 'analyze' | 'tracking' | 'load';
+
+export interface SyncProgressEvent {
+  phase: SyncPhase;
+  current: number;
+  total: number;
+  percent: number;
+  label: string;
+}
+
+export interface SyncCompleteResult {
+  type: 'complete';
+  message: string;
+  processed: number;
+  newOrders: number;
+  mergedOrders: number;
+}
+
 export const emailAccountsApi = {
   getAll: () => api.get<EmailAccount[]>('/email-accounts'),
 
@@ -44,11 +62,6 @@ export const emailAccountsApi = {
   sync: (id: string) =>
     api.post<{ message: string; processed: number; newOrders: number }>(
       `/email-accounts/${id}/sync`
-    ),
-
-  resync: (id: string) =>
-    api.post<{ message: string; processed: number; newOrders: number }>(
-      `/email-accounts/${id}/resync`
     ),
 
   syncAll: () =>

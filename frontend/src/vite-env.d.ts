@@ -5,6 +5,7 @@ interface ImportMetaEnv {
   readonly VITE_FRONTEND_URL: string | undefined;
   readonly VITE_STRIPE_PUBLISHABLE_KEY: string;
   readonly VITE_API_URL: string | undefined;
+  readonly VITE_BACKEND_PORT: string | undefined;
 }
 
 interface ImportMeta {

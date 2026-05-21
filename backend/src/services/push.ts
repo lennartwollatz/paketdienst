@@ -82,3 +82,34 @@ export async function sendPushToUser(userId: string, payload: PushPayload): Prom
 
   return delivered;
 }
+
+/** Push-Benachrichtigung, wenn beim E-Mail-Sync eine neue Bestellung erkannt wurde. */
+export async function notifyNewOrder(
+  userId: string,
+  order: {
+    id: string;
+    shop: string;
+    orderNumber?: string | null;
+    trackingNumber?: string | null;
+  },
+): Promise<void> {
+  const shop = order.shop && order.shop !== 'Unbekannt' ? order.shop : 'Unbekannt';
+  let body = `Eine neue Bestellung bei ${shop} wurde in deiner E-Mail erkannt.`;
+  if (order.trackingNumber) {
+    body = `Neue Bestellung bei ${shop} – Sendungsnummer ${order.trackingNumber}.`;
+  } else if (order.orderNumber) {
+    body = `Neue Bestellung bei ${shop} – Bestellnummer ${order.orderNumber}.`;
+  }
+
+  try {
+    await sendPushToUser(userId, {
+      title: `Neue Bestellung: ${shop}`,
+      body,
+      url: `/orders/${order.id}`,
+      tag: `order-new-${order.id}`,
+      data: { orderId: order.id, type: 'new_order' },
+    });
+  } catch (err) {
+    console.error('[push] Neue-Bestellung-Benachrichtigung fehlgeschlagen:', (err as Error).message);
+  }
+}

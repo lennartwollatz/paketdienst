@@ -13,6 +13,8 @@ import DOMPurify from 'dompurify';
 import { ordersApi, Order, OrderEmail, OrderPatch } from '../api/orders';
 import { attachmentsApi, Attachment } from '../api/attachments';
 import StatusBadge from '../components/StatusBadge';
+import CategoryChip from '../components/CategoryChip';
+import { ORDER_CATEGORIES } from '../constants/orderCategories';
 import MergeOrderModal from '../components/MergeOrderModal';
 
 function TrackingTimeline({ events }: { events: Order['trackingEvents'] }) {
@@ -333,6 +335,9 @@ export default function OrderDetail() {
   const [editTracking, setEditTracking] = useState('');
   const [editCarrier, setEditCarrier] = useState('');
   const [editStatus, setEditStatus] = useState('');
+  const [editCategory, setEditCategory] = useState('');
+  const [editPrice, setEditPrice] = useState('');
+  const [editCurrency, setEditCurrency] = useState('EUR');
   const [saving, setSaving] = useState(false);
   const [showMergeModal, setShowMergeModal] = useState(false);
 
@@ -377,9 +382,9 @@ export default function OrderDetail() {
     loadAttachments();
   }, [loadOrder, loadAttachments]);
 
-  // Auto-refresh tracking on mount – nur wenn Carrier bekannt ist
+  // Auto-refresh tracking on mount (Carrier wird serverseitig per TrackingMore erkannt)
   useEffect(() => {
-    if (order?.trackingNumber && order.carrier && order.trackingEvents.length === 0) {
+    if (order?.trackingNumber && order.trackingEvents.length === 0) {
       handleRefreshTracking();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -392,8 +397,9 @@ export default function OrderDetail() {
       const { data } = await ordersApi.refreshTracking(id);
       setOrder(data);
       toast.success('Tracking aktualisiert');
-    } catch {
-      toast.error('Tracking konnte nicht aktualisiert werden');
+    } catch (err: unknown) {
+      const body = (err as { response?: { data?: { detail?: string; error?: string } } })?.response?.data;
+      toast.error(body?.detail || body?.error || 'Tracking konnte nicht aktualisiert werden');
     } finally {
       setRefreshing(false);
     }
@@ -425,21 +431,46 @@ export default function OrderDetail() {
     setEditTracking(order.trackingNumber ?? '');
     setEditCarrier(order.carrier ?? '');
     setEditStatus(order.status);
+    setEditCategory(order.category ?? '');
+    setEditPrice(order.price != null ? String(order.price) : '');
+    setEditCurrency(order.currency ?? 'EUR');
     setEditing(true);
   };
 
   const handleSaveEdit = async () => {
     if (!id || !order) return;
+
+    let price: number | null = null;
+    const priceTrim = editPrice.trim();
+    if (priceTrim !== '') {
+      const parsed = parseFloat(priceTrim.replace(',', '.'));
+      if (Number.isNaN(parsed) || parsed < 0) {
+        toast.error('Ungültiger Preis');
+        return;
+      }
+      price = parsed;
+    }
+
     setSaving(true);
     try {
       const patch: OrderPatch = {
         trackingNumber: editTracking,
         carrier: editCarrier,
         status: editStatus,
+        category: editCategory || null,
+        price,
+        currency: price != null ? editCurrency || 'EUR' : null,
       };
       const { data } = await ordersApi.update(id, patch);
-      setOrder(data);
+      const propagated = data.categoriesPropagated ?? 0;
+      const { categoriesPropagated: _p, ...orderData } = data;
+      setOrder(orderData);
       setEditing(false);
+      if (propagated > 0) {
+        toast.success(
+          `Kategorie bei ${propagated} weiteren Bestellung${propagated !== 1 ? 'en' : ''} von ${order.shop} übernommen`,
+        );
+      }
       // Wenn Trackingnummer neu/geändert wurde UND Carrier bekannt → sofort Tracking abrufen
       const trackingChanged = editTracking && editTracking !== order.trackingNumber;
       const carrierKnown = !!(editCarrier || data.carrier);
@@ -551,8 +582,9 @@ export default function OrderDetail() {
               {order.subject && (
                 <p className="text-sm text-gray-500 mt-0.5 line-clamp-2">{order.subject}</p>
               )}
-              <div className="flex items-center gap-2 mt-2">
+              <div className="flex flex-wrap items-center gap-2 mt-2">
                 <StatusBadge status={order.status} size="md" />
+                <CategoryChip categoryId={order.category} size="md" />
                 {order.carrier && (
                   <span className="text-sm text-gray-400 flex items-center gap-1">
                     <Truck className="w-3.5 h-3.5" />
@@ -568,13 +600,43 @@ export default function OrderDetail() {
         {editing && (
           <div className="card border-blue-200 bg-blue-50/40">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="font-semibold text-gray-800">Sendung bearbeiten</h2>
+              <h2 className="font-semibold text-gray-800">Bestellung bearbeiten</h2>
               <button onClick={() => setEditing(false)} className="p-1 text-gray-400 hover:text-gray-600 rounded-lg">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             <div className="space-y-3">
+              {/* Preis */}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs font-medium text-gray-500 mb-1 block">Gesamtbetrag</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={editPrice}
+                    onChange={e => setEditPrice(e.target.value)}
+                    placeholder="z.B. 49,99"
+                    className="input-field"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 mb-1 block">Währung</label>
+                  <select
+                    value={editCurrency}
+                    onChange={e => setEditCurrency(e.target.value)}
+                    className="input-field"
+                    disabled={!editPrice.trim()}
+                  >
+                    <option value="EUR">EUR</option>
+                    <option value="USD">USD</option>
+                    <option value="GBP">GBP</option>
+                    <option value="CHF">CHF</option>
+                  </select>
+                </div>
+              </div>
+              <p className="text-xs text-gray-400 -mt-1">Leer lassen, wenn kein Preis bekannt ist.</p>
+
               {/* Trackingnummer */}
               <div>
                 <label className="text-xs font-medium text-gray-500 mb-1 block">Sendungsnummer</label>
@@ -603,6 +665,21 @@ export default function OrderDetail() {
                   <option value="GLS">GLS</option>
                   <option value="FedEx">FedEx</option>
                   <option value="Deutsche Post">Deutsche Post</option>
+                </select>
+              </div>
+
+              {/* Kategorie */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 mb-1 block">Kategorie</label>
+                <select
+                  value={editCategory}
+                  onChange={e => setEditCategory(e.target.value)}
+                  className="input-field"
+                >
+                  <option value="">Keine Kategorie</option>
+                  {ORDER_CATEGORIES.map((c) => (
+                    <option key={c.id} value={c.id}>{c.label}</option>
+                  ))}
                 </select>
               </div>
 
@@ -680,7 +757,12 @@ export default function OrderDetail() {
             icon={Euro}
             label="Gesamtbetrag"
             value={order.price != null
-              ? `${order.price.toFixed(2)} ${order.currency || 'EUR'}`
+              ? new Intl.NumberFormat('de-DE', {
+                  style: 'currency',
+                  currency: order.currency || 'EUR',
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                }).format(order.price)
               : undefined}
           />
           <InfoRow

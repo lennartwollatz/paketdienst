@@ -20,6 +20,10 @@ export interface TrackingResult {
   events: TrackingEvent[];
   estimatedDelivery?: Date;
   provider: string;
+  /** Von TrackingMore erkannter Carrier-Name (couriers/detect) */
+  detectedCarrier?: string;
+  /** TrackingMore courier_code */
+  courierCode?: string;
 }
 
 export type TrackingErrorType =
@@ -40,6 +44,19 @@ export class TrackingProviderError extends Error {
     this.provider = provider;
     this.type = type;
     this.retryable = retryable;
+  }
+}
+
+/** HTTP-Status für API-Antworten – not_found vom Provider ist kein „Route not found“. */
+export function trackingErrorStatusCode(type: TrackingErrorType): number {
+  switch (type) {
+    case 'rate_limit': return 429;
+    case 'auth':       return 502;
+    case 'not_found':  return 502;
+    case 'timeout':
+    case 'network':
+    case 'unknown':
+    default:           return 503;
   }
 }
 

@@ -4,6 +4,7 @@ import { format } from 'date-fns';
 import { de } from 'date-fns/locale';
 import { Order } from '../api/orders';
 import StatusBadge from './StatusBadge';
+import CategoryChip from './CategoryChip';
 
 interface OrderCardProps {
   order: Order;
@@ -29,8 +30,9 @@ export default function OrderCard({ order }: OrderCardProps) {
             <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
           </div>
 
-          <div className="flex items-center gap-2 mt-1">
+          <div className="flex flex-wrap items-center gap-2 mt-1">
             <StatusBadge status={order.status} />
+            <CategoryChip categoryId={order.category} />
             {order.carrier && (
               <span className="text-xs text-gray-400">{order.carrier}</span>
             )}

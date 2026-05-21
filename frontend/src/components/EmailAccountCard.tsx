@@ -1,10 +1,13 @@
 import { useState } from 'react';
-import { Mail, Trash2, RefreshCw, CheckCircle, Clock, RotateCcw, FolderOpen } from 'lucide-react';
+import { Mail, Trash2, RefreshCw, CheckCircle, Clock, FolderOpen } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { de } from 'date-fns/locale';
 import toast from 'react-hot-toast';
-import { EmailAccount, emailAccountsApi } from '../api/emailAccounts';
+import { EmailAccount, emailAccountsApi, SyncProgressEvent } from '../api/emailAccounts';
 import FolderManagerModal from './FolderManagerModal';
+import SyncProgressBar from './SyncProgressBar';
+import { syncAccountWithProgress } from '../lib/syncProgress';
+import { buildLoadProgress } from '../lib/syncPercent';
 
 const PROVIDER_ICONS: Record<string, string> = {
   gmail: '📧',
@@ -20,41 +23,70 @@ const PROVIDER_ICONS: Record<string, string> = {
 interface EmailAccountCardProps {
   account: EmailAccount;
   onDelete: (id: string) => void;
-  onSynced: () => void;
+  onSynced: () => void | Promise<void>;
 }
 
 export default function EmailAccountCard({ account, onDelete, onSynced }: EmailAccountCardProps) {
   const [syncing, setSyncing] = useState(false);
-  const [resyncing, setResyncing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [showFolderManager, setShowFolderManager] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<SyncProgressEvent | null>(null);
+
+  const runSyncWithProgress = async () => {
+    const phaseState = {
+      fetch:    { current: 0, total: 0 },
+      analyze:  { current: 0, total: 0 },
+      tracking: { current: 0, total: 0 },
+      load:     { current: 0, total: 0 },
+    };
+
+    await syncAccountWithProgress(account.id, {
+      onProgress: (event) => {
+        phaseState[event.phase] = { current: event.current, total: event.total };
+        setSyncProgress(event);
+      },
+      onComplete: async (result) => {
+        const loading = buildLoadProgress(phaseState, 0, 1);
+        setSyncProgress({
+          phase: 'load',
+          current: 0,
+          total: 1,
+          percent: loading.percent,
+          label: 'Bestellungen werden geladen…',
+        });
+        await onSynced();
+        const done = buildLoadProgress(phaseState, 1, 1);
+        setSyncProgress({
+          phase: 'load',
+          current: 1,
+          total: 1,
+          percent: done.percent,
+          label: 'Fertig',
+        });
+        toast.success(result.message);
+      },
+      onError: (message) => {
+        toast.error(message);
+      },
+    });
+  };
 
   const handleSync = async () => {
     setSyncing(true);
+    setSyncProgress({
+      phase: 'fetch',
+      current: 0,
+      total: 1,
+      percent: 0,
+      label: 'Synchronisation wird gestartet…',
+    });
     try {
-      const { data } = await emailAccountsApi.sync(account.id);
-      toast.success(data.message);
-      onSynced();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Sync fehlgeschlagen';
-      toast.error(msg);
+      await runSyncWithProgress();
+    } catch {
+      toast.error('Sync fehlgeschlagen');
     } finally {
       setSyncing(false);
-    }
-  };
-
-  const handleResync = async () => {
-    if (!confirm(`Alle E-Mails von "${account.email}" werden erneut durch GPT verarbeitet. Bestehende Bestellungen dieses Kontos werden dabei zurückgesetzt. Fortfahren?`)) return;
-    setResyncing(true);
-    try {
-      const { data } = await emailAccountsApi.resync(account.id);
-      toast.success(data.message);
-      onSynced();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Neusync fehlgeschlagen';
-      toast.error(msg);
-    } finally {
-      setResyncing(false);
+      setSyncProgress(null);
     }
   };
 
@@ -113,10 +145,14 @@ export default function EmailAccountCard({ account, onDelete, onSynced }: EmailA
             )}
           </div>
 
+          {syncing && syncProgress && (
+            <SyncProgressBar progress={syncProgress} />
+          )}
+
           <div className="flex gap-2 mt-3">
             <button
               onClick={handleSync}
-              disabled={syncing || resyncing}
+              disabled={syncing}
               className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 bg-blue-50 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-100 active:bg-blue-200 transition-colors disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
@@ -124,23 +160,15 @@ export default function EmailAccountCard({ account, onDelete, onSynced }: EmailA
             </button>
             <button
               onClick={() => setShowFolderManager(true)}
-              disabled={syncing || resyncing}
+              disabled={syncing}
               title="Ordner verwalten – gesperrte Ordner werden nicht synchronisiert"
               className="flex items-center justify-center p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 active:bg-indigo-200 transition-colors disabled:opacity-50"
             >
               <FolderOpen className="w-4 h-4" />
             </button>
             <button
-              onClick={handleResync}
-              disabled={syncing || resyncing}
-              title="Alle E-Mails erneut durch GPT verarbeiten lassen"
-              className="flex items-center justify-center p-2 bg-amber-50 text-amber-600 rounded-lg hover:bg-amber-100 active:bg-amber-200 transition-colors disabled:opacity-50"
-            >
-              <RotateCcw className={`w-4 h-4 ${resyncing ? 'animate-spin' : ''}`} />
-            </button>
-            <button
               onClick={handleDelete}
-              disabled={deleting || resyncing}
+              disabled={deleting || syncing}
               className="flex items-center justify-center p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-100 active:bg-red-200 transition-colors disabled:opacity-50"
             >
               <Trash2 className="w-4 h-4" />

@@ -17,6 +17,15 @@ export declare class TrackingMoreProvider implements TrackingProvider {
     readonly providerName = "trackingmore";
     readonly carrierKeys: string[];
     isConfigured(): boolean;
-    fetchTracking(trackingNumber: string, carrier?: string): Promise<TrackingResult>;
+    fetchTracking(trackingNumber: string): Promise<TrackingResult>;
 }
+/**
+ * Entfernt eine Sendung aus dem TrackingMore-Konto (API delete by ID).
+ * Lokale Bestellungen und Tracking-Events werden nicht gelöscht.
+ * Fehler werden geloggt, werfen aber keine Exception (idempotent).
+ */
+export declare function deleteTrackingFromTrackingMore(trackingNumber: string, options?: {
+    courierCode?: string | null;
+    carrier?: string | null;
+}): Promise<void>;
 //# sourceMappingURL=trackingmore.d.ts.map

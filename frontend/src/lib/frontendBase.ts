@@ -47,14 +47,23 @@ export function resolveFrontendPublicUrl(path: string): string {
 }
 
 /**
- * Axios baseURL: VITE_API_URL (absolut, z. B. http://localhost:3001) falls gesetzt,
- * sonst gleicher Host + Pfad wie die SPA: „{spaPrefix}/api“ oder „/api“ an der Root.
+ * Axios baseURL:
+ * - VITE_API_URL gesetzt → exakt diese URL (z. B. http://localhost:3003/api)
+ * - Development ohne VITE_API_URL → direkt Backend (VITE_BACKEND_PORT, Standard 3003),
+ *   damit lange Requests (Tracking-Refresh) nicht am Vite-Proxy auf :5177 hängen bleiben
+ * - Production → relativer Pfad „{spaPrefix}/api“
  */
 export function resolveApiBaseUrl(): string {
   const explicit = import.meta.env.VITE_API_URL?.trim();
   if (explicit) {
     return explicit.replace(/\/+$/, '');
   }
+
+  if (import.meta.env.DEV) {
+    const port = import.meta.env.VITE_BACKEND_PORT?.trim() || '3003';
+    return `http://localhost:${port}/api`;
+  }
+
   const prefix = spaPathPrefix();
   if (prefix) {
     return `${prefix}/api`;

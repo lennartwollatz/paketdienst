@@ -37,6 +37,8 @@ export interface Order {
   price: number | null;
   currency: string | null;
   status: string;
+  category: string | null;
+  categoryManual?: boolean;
   orderDate: string | null;
   estimatedDelivery: string | null;
   subject: string | null;
@@ -54,6 +56,9 @@ export interface OrderPatch {
   trackingNumber?: string;
   carrier?: string;
   status?: string;
+  category?: string | null;
+  price?: number | null;
+  currency?: string | null;
 }
 
 export const ordersApi = {
@@ -61,9 +66,13 @@ export const ordersApi = {
 
   getById: (id: string) => api.get<Order>(`/orders/${id}`),
 
-  update: (id: string, patch: OrderPatch) => api.patch<Order>(`/orders/${id}`, patch),
+  update: (id: string, patch: OrderPatch) =>
+    api.patch<Order & { categoriesPropagated?: number }>(`/orders/${id}`, patch),
 
-  refreshTracking: (id: string) => api.post<Order>(`/orders/${id}/refresh-tracking`),
+  refreshTracking: (id: string) =>
+    api.post<Order>(`/orders/${id}/refresh-tracking`, undefined, {
+      timeout: 120_000,
+    }),
 
   merge: (primaryId: string, secondaryIds: string[]) =>
     api.post<Order>('/orders/merge', { primaryId, secondaryIds }),

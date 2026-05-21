@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, RefreshCw, Package, Inbox, Store, ChevronDown } from 'lucide-react';
 import { format } from 'date-fns';
 import { de } from 'date-fns/locale';
@@ -12,9 +13,12 @@ import EmailAccountCard from '../components/EmailAccountCard';
 import OrderCard from '../components/OrderCard';
 import AddEmailAccountModal from '../components/AddEmailAccountModal';
 import SettingsModal from '../components/SettingsModal';
+import PushPromptBanner from '../components/PushPromptBanner';
 
 export default function Home() {
   const { user, logout } = useAuthStore();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<'emails' | 'orders'>('orders');
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -53,6 +57,26 @@ export default function Home() {
     loadOrders();
   }, [loadEmailAccounts, loadOrders]);
 
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    if (tab === 'emails' || tab === 'orders') {
+      setActiveTab(tab);
+    }
+    if (searchParams.get('settings') === '1') {
+      setShowSettings(true);
+    }
+  }, [searchParams]);
+
+  const handleNavTab = (tab: 'emails' | 'orders' | 'analytics') => {
+    if (tab === 'analytics') {
+      navigate('/analytics');
+      return;
+    }
+    setActiveTab(tab);
+    setShowSettings(false);
+    setSearchParams(tab === 'orders' ? { tab: 'orders' } : { tab: 'emails' }, { replace: true });
+  };
+
   const handleSyncAll = async () => {
     if (emailAccounts.length === 0) {
       toast('Füge zuerst ein E-Mail-Konto hinzu', { icon: '📧' });
@@ -86,7 +110,9 @@ export default function Home() {
           loading={loadingEmails}
           onAdd={() => setShowAddEmail(true)}
           onDelete={(id) => setEmailAccounts((prev) => prev.filter((a) => a.id !== id))}
-          onSynced={() => { loadOrders(); loadEmailAccounts(); }}
+          onSynced={async () => {
+            await Promise.all([loadOrders(), loadEmailAccounts()]);
+          }}
         />
       ) : (
         <OrdersTab
@@ -99,9 +125,12 @@ export default function Home() {
 
       {/* Bottom Nav */}
       <BottomNav
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        onSettings={() => setShowSettings(true)}
+        activeTab={showSettings ? 'settings' : activeTab}
+        onTabChange={handleNavTab}
+        onSettings={() => {
+          setShowSettings(true);
+          setSearchParams({ settings: '1' }, { replace: true });
+        }}
         showSettings={showSettings}
       />
 
@@ -114,7 +143,13 @@ export default function Home() {
       )}
 
       {showSettings && (
-        <SettingsModal onClose={() => setShowSettings(false)} onLogout={logout} />
+        <SettingsModal
+          onClose={() => {
+            setShowSettings(false);
+            setSearchParams({}, { replace: true });
+          }}
+          onLogout={logout}
+        />
       )}
     </div>
   );
@@ -384,6 +419,8 @@ function OrdersTab({
 
   return (
     <div className="px-4 py-4">
+      <PushPromptBanner />
+
       {/* Toolbar */}
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-lg font-semibold text-gray-800">Meine Bestellungen</h2>

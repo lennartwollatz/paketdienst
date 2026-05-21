@@ -2,3 +2,5 @@ node_modules/
 .env
 backend/dev.db
 backend/dev.db-journal
+backend/prod.db
+backend/prod.db-journal

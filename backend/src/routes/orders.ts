@@ -1,9 +1,11 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { requireAuth, requirePayment, AuthRequest } from '../middleware/auth';
-import { getTrackingInfo } from '../services/tracking';
-import { dedupeEvents } from '../services/tracking/normalization';
-import { TrackingProviderError } from '../services/tracking/types';
+import { refreshOrderTracking } from '../services/tracking/refreshOrder';
+import { TrackingProviderError, trackingErrorStatusCode } from '../services/tracking/types';
+import { isValidOrderCategory } from '../constants/orderCategories';
+import { deleteTrackingFromTrackingMore } from '../services/tracking/providers/trackingmore';
+import { applyShopCategoryAssignment, resolveOrderCategory } from '../services/shopCategory';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -29,60 +31,79 @@ function deriveStatusForDedup(
   return 'processing';
 }
 
-/**
- * Fasst alle Bestellungen mit gleicher orderNumber eines Nutzers zusammen.
- * Wird automatisch nach jedem Sync aufgerufen.
- */
-export async function deduplicateOrders(userId: string): Promise<number> {
+type OrderForDedup = Awaited<ReturnType<typeof prisma.order.findMany>>[number];
+
+async function mergeOrderGroup(primary: OrderForDedup, duplicates: OrderForDedup[]): Promise<number> {
+  if (duplicates.length === 0) return 0;
+
+  const patch: Record<string, unknown> = {};
+
+  for (const dup of duplicates) {
+    if ((!primary.shop || primary.shop === 'Unbekannt') && dup.shop && dup.shop !== 'Unbekannt') {
+      patch.shop = dup.shop;
+    }
+    if (!primary.orderNumber && dup.orderNumber) patch.orderNumber = dup.orderNumber;
+    if (!primary.trackingNumber && dup.trackingNumber) patch.trackingNumber = dup.trackingNumber;
+    if (!primary.carrier && dup.carrier) patch.carrier = dup.carrier;
+    if (!primary.price && dup.price) patch.price = dup.price;
+    if (!primary.estimatedDelivery && dup.estimatedDelivery) patch.estimatedDelivery = dup.estimatedDelivery;
+    if (!primary.emailBody && dup.emailBody) patch.emailBody = dup.emailBody;
+    if (!primary.emailBodyHtml && dup.emailBodyHtml) patch.emailBodyHtml = dup.emailBodyHtml;
+    if (!primary.emailStatus && dup.emailStatus) patch.emailStatus = dup.emailStatus;
+    if (!primary.deliveryAddress && dup.deliveryAddress) patch.deliveryAddress = dup.deliveryAddress;
+    if (!primary.category && dup.category) patch.category = dup.category;
+  }
+
+  const finalTracking = (patch.trackingNumber as string | null) ?? primary.trackingNumber;
+  const finalEmailStatus = (patch.emailStatus as string | null) ?? primary.emailStatus;
+  const finalAddress = (patch.deliveryAddress as string | null) ?? primary.deliveryAddress;
+  patch.status = deriveStatusForDedup(finalTracking, finalEmailStatus, finalAddress, primary.status);
+
+  await prisma.order.update({ where: { id: primary.id }, data: patch });
+
+  for (const dup of duplicates) {
+    await prisma.orderAttachment.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
+    await prisma.trackingEvent.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
+    await prisma.orderEmail.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
+    await prisma.order.delete({ where: { id: dup.id } });
+  }
+
+  return duplicates.length;
+}
+
+async function deduplicateByField(
+  userId: string,
+  field: 'orderNumber' | 'trackingNumber',
+): Promise<number> {
   const orders = await prisma.order.findMany({
-    where: { userId, orderNumber: { not: null } },
+    where: { userId, [field]: { not: null } },
     orderBy: { orderDate: 'asc' },
-    include: { attachments: true, trackingEvents: true },
   });
 
   const groups = new Map<string, typeof orders>();
   for (const order of orders) {
-    const key = order.orderNumber!;
+    const key = order[field]!;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(order);
   }
 
   let mergedCount = 0;
-
   for (const [, group] of groups) {
     if (group.length < 2) continue;
-
     const [primary, ...duplicates] = group;
-    const patch: Record<string, unknown> = {};
-
-    for (const dup of duplicates) {
-      if (!primary.trackingNumber && dup.trackingNumber) patch.trackingNumber = dup.trackingNumber;
-      if (!primary.carrier && dup.carrier) patch.carrier = dup.carrier;
-      if (!primary.price && dup.price) patch.price = dup.price;
-      if (!primary.estimatedDelivery && dup.estimatedDelivery) patch.estimatedDelivery = dup.estimatedDelivery;
-      if (!primary.emailBody && dup.emailBody) patch.emailBody = dup.emailBody;
-      if (!primary.emailBodyHtml && dup.emailBodyHtml) patch.emailBodyHtml = dup.emailBodyHtml;
-      if (!primary.emailStatus && dup.emailStatus) patch.emailStatus = dup.emailStatus;
-      if (!primary.deliveryAddress && dup.deliveryAddress) patch.deliveryAddress = dup.deliveryAddress;
-    }
-
-    // Status nach Merge neu ableiten
-    const finalTracking = (patch.trackingNumber as string | null) ?? primary.trackingNumber;
-    const finalEmailStatus = (patch.emailStatus as string | null) ?? primary.emailStatus;
-    const finalAddress = (patch.deliveryAddress as string | null) ?? primary.deliveryAddress;
-    patch.status = deriveStatusForDedup(finalTracking, finalEmailStatus, finalAddress, primary.status);
-
-    await prisma.order.update({ where: { id: primary.id }, data: patch });
-
-    for (const dup of duplicates) {
-      await prisma.orderAttachment.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
-      await prisma.trackingEvent.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
-      await prisma.orderEmail.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
-      await prisma.order.delete({ where: { id: dup.id } });
-      mergedCount++;
-    }
+    mergedCount += await mergeOrderGroup(primary, duplicates);
   }
+  return mergedCount;
+}
 
+/**
+ * Fasst Bestellungen mit gleicher orderNumber oder trackingNumber eines Nutzers zusammen.
+ * Wird automatisch nach jedem Sync aufgerufen.
+ */
+export async function deduplicateOrders(userId: string): Promise<number> {
+  let mergedCount = 0;
+  mergedCount += await deduplicateByField(userId, 'orderNumber');
+  mergedCount += await deduplicateByField(userId, 'trackingNumber');
   return mergedCount;
 }
 
@@ -126,6 +147,7 @@ router.post('/merge', requireAuth, requirePayment, async (req: AuthRequest, res:
     if (!primary.emailBody && sec.emailBody)           patch.emailBody = sec.emailBody;
     if (!primary.emailBodyHtml && sec.emailBodyHtml)   patch.emailBodyHtml = sec.emailBodyHtml;
     if (!primary.orderDate && sec.orderDate)           patch.orderDate = sec.orderDate;
+    if (!primary.category && sec.category)             patch.category = sec.category;
   }
 
   // Status neu ableiten
@@ -191,12 +213,19 @@ router.post('/:id/split', requireAuth, requirePayment, async (req: AuthRequest, 
   const newOrders = await prisma.$transaction(async (tx) => {
     const created = [];
     for (const em of emailsToSplit) {
+      const splitShop = em.gptShop || order.shop || 'Unbekannt';
+      const splitCategory = await resolveOrderCategory(
+        userId,
+        splitShop,
+        em.gptCategory ?? null,
+      );
       // Neue Bestellung aus GPT-Daten der Email erzeugen
       const newOrder = await tx.order.create({
         data: {
           userId,
           emailAccountId: order.emailAccountId,
-          shop:             em.gptShop             || order.shop || 'Unbekannt',
+          shop:             splitShop,
+          category:         splitCategory,
           orderNumber:      em.gptOrderNumber      ?? null,
           trackingNumber:   em.gptTrackingNumber   ?? null,
           carrier:          em.gptCarrier          ?? null,
@@ -291,40 +320,15 @@ router.post('/:id/refresh-tracking', requireAuth, requirePayment, async (req: Au
     where: { id: orderId, userId },
   });
 
-  if (!order) return res.status(404).json({ error: 'Bestellung nicht gefunden' });
+  if (!order) {
+    return res.status(404).json({ error: 'Bestellung nicht gefunden', code: 'ORDER_NOT_FOUND' });
+  }
   if (!order.trackingNumber) {
     return res.status(400).json({ error: 'Keine Sendungsnummer vorhanden' });
   }
-  if (!order.carrier) {
-    return res.status(400).json({ error: 'Kein Transportunternehmen bekannt – Tracking nicht möglich' });
-  }
 
   try {
-    const result = await getTrackingInfo(order.trackingNumber, order.carrier || undefined);
-    const uniqueEvents = dedupeEvents(result.events);
-
-    await prisma.$transaction(async (tx) => {
-      await tx.trackingEvent.deleteMany({ where: { orderId: order.id } });
-      if (uniqueEvents.length > 0) {
-        await tx.trackingEvent.createMany({
-          data: uniqueEvents.map((event) => ({
-            orderId: order.id,
-            timestamp: event.timestamp,
-            location: event.location,
-            status: event.status,
-            description: event.description,
-          })),
-        });
-      }
-
-      await tx.order.update({
-        where: { id: order.id },
-        data: {
-          status: result.status,
-          estimatedDelivery: result.estimatedDelivery || order.estimatedDelivery,
-        },
-      });
-    });
+    await refreshOrderTracking(order.id, { sendPush: true });
 
     const updatedOrder = await prisma.order.findUnique({
       where: { id: order.id },
@@ -334,9 +338,9 @@ router.post('/:id/refresh-tracking', requireAuth, requirePayment, async (req: Au
     return res.json(updatedOrder);
   } catch (err) {
     if (err instanceof TrackingProviderError) {
-      const statusCode = err.type === 'not_found' ? 404 : err.type === 'auth' ? 502 : 503;
-      return res.status(statusCode).json({
+      return res.status(trackingErrorStatusCode(err.type)).json({
         error: 'Tracking-Aktualisierung fehlgeschlagen',
+        code: `TRACKING_${err.type.toUpperCase()}`,
         provider: err.provider,
         type: err.type,
         detail: err.message,
@@ -347,7 +351,7 @@ router.post('/:id/refresh-tracking', requireAuth, requirePayment, async (req: Au
   }
 });
 
-// PATCH /api/orders/:id  – Sendungsnummer, Spediteur und Status manuell setzen
+// PATCH /api/orders/:id  – Felder manuell setzen (Tracking, Kategorie, Preis, …)
 router.patch('/:id', requireAuth, requirePayment, async (req: AuthRequest, res: Response) => {
   const orderId = String(req.params.id);
   const userId  = String(req.user!.id);
@@ -355,28 +359,103 @@ router.patch('/:id', requireAuth, requirePayment, async (req: AuthRequest, res: 
   const order = await prisma.order.findFirst({ where: { id: orderId, userId } });
   if (!order) return res.status(404).json({ error: 'Bestellung nicht gefunden' });
 
-  const allowed = ['trackingNumber', 'carrier', 'status'] as const;
-  const patch: Record<string, string | null> = {};
-  for (const key of allowed) {
-    if (key in req.body) {
-      patch[key] = req.body[key] === '' ? null : String(req.body[key]);
+  const updateData: Record<string, string | null | boolean | number> = {};
+  let hasFields = false;
+
+  if ('trackingNumber' in req.body) {
+    hasFields = true;
+    updateData.trackingNumber = req.body.trackingNumber === '' ? null : String(req.body.trackingNumber);
+  }
+  if ('carrier' in req.body) {
+    hasFields = true;
+    updateData.carrier = req.body.carrier === '' ? null : String(req.body.carrier);
+  }
+  if ('status' in req.body) {
+    hasFields = true;
+    updateData.status = req.body.status === '' ? null : String(req.body.status);
+  }
+  if ('price' in req.body) {
+    hasFields = true;
+    const raw = req.body.price;
+    if (raw === '' || raw == null) {
+      updateData.price = null;
+    } else {
+      const price = typeof raw === 'number'
+        ? raw
+        : parseFloat(String(raw).trim().replace(',', '.'));
+      if (Number.isNaN(price) || price < 0) {
+        return res.status(400).json({ error: 'Ungültiger Preis' });
+      }
+      updateData.price = price;
     }
   }
+  if ('currency' in req.body) {
+    hasFields = true;
+    const cur = req.body.currency === '' || req.body.currency == null
+      ? null
+      : String(req.body.currency).trim().toUpperCase();
+    updateData.currency = cur;
+  }
 
-  if (Object.keys(patch).length === 0) {
+  let categoriesPropagated = 0;
+  const categoryTouched = 'category' in req.body;
+  let categoryValue: string | null | undefined;
+
+  if (categoryTouched) {
+    hasFields = true;
+    const raw = req.body.category === '' || req.body.category == null
+      ? null
+      : String(req.body.category);
+    if (raw !== null && !isValidOrderCategory(raw)) {
+      return res.status(400).json({ error: 'Ungültige Kategorie' });
+    }
+    categoryValue = raw;
+    updateData.category = raw;
+  }
+
+  if (!hasFields) {
     return res.status(400).json({ error: 'Keine gültigen Felder angegeben' });
+  }
+
+  const categoryChanged = categoryTouched
+    && (categoryValue ?? null) !== (order.category ?? null);
+
+  if (categoryChanged) {
+    updateData.categoryManual = true;
   }
 
   const updated = await prisma.order.update({
     where: { id: orderId },
-    data: patch,
+    data: updateData,
     include: {
       trackingEvents: { orderBy: { timestamp: 'desc' } },
       emailAccount: { select: { email: true, provider: true } },
+      orderEmails: { orderBy: { receivedAt: 'asc' } },
     },
   });
 
-  return res.json(updated);
+  if (categoryChanged) {
+    categoriesPropagated = await applyShopCategoryAssignment(
+      userId,
+      order.shop,
+      categoryValue ?? null,
+      orderId,
+    );
+  }
+
+  const newStatus = (updateData.status as string | undefined) ?? order.status;
+  const trackingNumber = (updateData.trackingNumber as string | null | undefined) ?? order.trackingNumber;
+  if (
+    newStatus === 'delivered'
+    && order.status !== 'delivered'
+    && trackingNumber
+  ) {
+    void deleteTrackingFromTrackingMore(trackingNumber, {
+      carrier: (updateData.carrier as string | null | undefined) ?? order.carrier,
+    });
+  }
+
+  return res.json({ ...updated, categoriesPropagated });
 });
 
 // DELETE /api/orders/:id

@@ -4,9 +4,11 @@ exports.deduplicateOrders = deduplicateOrders;
 const express_1 = require("express");
 const client_1 = require("@prisma/client");
 const auth_1 = require("../middleware/auth");
-const tracking_1 = require("../services/tracking");
-const normalization_1 = require("../services/tracking/normalization");
+const refreshOrder_1 = require("../services/tracking/refreshOrder");
 const types_1 = require("../services/tracking/types");
+const orderCategories_1 = require("../constants/orderCategories");
+const trackingmore_1 = require("../services/tracking/providers/trackingmore");
+const shopCategory_1 = require("../services/shopCategory");
 const router = (0, express_1.Router)();
 const prisma = new client_1.PrismaClient();
 function deriveStatusForDedup(trackingNumber, emailStatus, deliveryAddress, currentStatus) {
@@ -31,19 +33,56 @@ function deriveStatusForDedup(trackingNumber, emailStatus, deliveryAddress, curr
         return 'delivered';
     return 'processing';
 }
-/**
- * Fasst alle Bestellungen mit gleicher orderNumber eines Nutzers zusammen.
- * Wird automatisch nach jedem Sync aufgerufen.
- */
-async function deduplicateOrders(userId) {
+async function mergeOrderGroup(primary, duplicates) {
+    if (duplicates.length === 0)
+        return 0;
+    const patch = {};
+    for (const dup of duplicates) {
+        if ((!primary.shop || primary.shop === 'Unbekannt') && dup.shop && dup.shop !== 'Unbekannt') {
+            patch.shop = dup.shop;
+        }
+        if (!primary.orderNumber && dup.orderNumber)
+            patch.orderNumber = dup.orderNumber;
+        if (!primary.trackingNumber && dup.trackingNumber)
+            patch.trackingNumber = dup.trackingNumber;
+        if (!primary.carrier && dup.carrier)
+            patch.carrier = dup.carrier;
+        if (!primary.price && dup.price)
+            patch.price = dup.price;
+        if (!primary.estimatedDelivery && dup.estimatedDelivery)
+            patch.estimatedDelivery = dup.estimatedDelivery;
+        if (!primary.emailBody && dup.emailBody)
+            patch.emailBody = dup.emailBody;
+        if (!primary.emailBodyHtml && dup.emailBodyHtml)
+            patch.emailBodyHtml = dup.emailBodyHtml;
+        if (!primary.emailStatus && dup.emailStatus)
+            patch.emailStatus = dup.emailStatus;
+        if (!primary.deliveryAddress && dup.deliveryAddress)
+            patch.deliveryAddress = dup.deliveryAddress;
+        if (!primary.category && dup.category)
+            patch.category = dup.category;
+    }
+    const finalTracking = patch.trackingNumber ?? primary.trackingNumber;
+    const finalEmailStatus = patch.emailStatus ?? primary.emailStatus;
+    const finalAddress = patch.deliveryAddress ?? primary.deliveryAddress;
+    patch.status = deriveStatusForDedup(finalTracking, finalEmailStatus, finalAddress, primary.status);
+    await prisma.order.update({ where: { id: primary.id }, data: patch });
+    for (const dup of duplicates) {
+        await prisma.orderAttachment.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
+        await prisma.trackingEvent.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
+        await prisma.orderEmail.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
+        await prisma.order.delete({ where: { id: dup.id } });
+    }
+    return duplicates.length;
+}
+async function deduplicateByField(userId, field) {
     const orders = await prisma.order.findMany({
-        where: { userId, orderNumber: { not: null } },
+        where: { userId, [field]: { not: null } },
         orderBy: { orderDate: 'asc' },
-        include: { attachments: true, trackingEvents: true },
     });
     const groups = new Map();
     for (const order of orders) {
-        const key = order.orderNumber;
+        const key = order[field];
         if (!groups.has(key))
             groups.set(key, []);
         groups.get(key).push(order);
@@ -53,39 +92,18 @@ async function deduplicateOrders(userId) {
         if (group.length < 2)
             continue;
         const [primary, ...duplicates] = group;
-        const patch = {};
-        for (const dup of duplicates) {
-            if (!primary.trackingNumber && dup.trackingNumber)
-                patch.trackingNumber = dup.trackingNumber;
-            if (!primary.carrier && dup.carrier)
-                patch.carrier = dup.carrier;
-            if (!primary.price && dup.price)
-                patch.price = dup.price;
-            if (!primary.estimatedDelivery && dup.estimatedDelivery)
-                patch.estimatedDelivery = dup.estimatedDelivery;
-            if (!primary.emailBody && dup.emailBody)
-                patch.emailBody = dup.emailBody;
-            if (!primary.emailBodyHtml && dup.emailBodyHtml)
-                patch.emailBodyHtml = dup.emailBodyHtml;
-            if (!primary.emailStatus && dup.emailStatus)
-                patch.emailStatus = dup.emailStatus;
-            if (!primary.deliveryAddress && dup.deliveryAddress)
-                patch.deliveryAddress = dup.deliveryAddress;
-        }
-        // Status nach Merge neu ableiten
-        const finalTracking = patch.trackingNumber ?? primary.trackingNumber;
-        const finalEmailStatus = patch.emailStatus ?? primary.emailStatus;
-        const finalAddress = patch.deliveryAddress ?? primary.deliveryAddress;
-        patch.status = deriveStatusForDedup(finalTracking, finalEmailStatus, finalAddress, primary.status);
-        await prisma.order.update({ where: { id: primary.id }, data: patch });
-        for (const dup of duplicates) {
-            await prisma.orderAttachment.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
-            await prisma.trackingEvent.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
-            await prisma.orderEmail.updateMany({ where: { orderId: dup.id }, data: { orderId: primary.id } });
-            await prisma.order.delete({ where: { id: dup.id } });
-            mergedCount++;
-        }
+        mergedCount += await mergeOrderGroup(primary, duplicates);
     }
+    return mergedCount;
+}
+/**
+ * Fasst Bestellungen mit gleicher orderNumber oder trackingNumber eines Nutzers zusammen.
+ * Wird automatisch nach jedem Sync aufgerufen.
+ */
+async function deduplicateOrders(userId) {
+    let mergedCount = 0;
+    mergedCount += await deduplicateByField(userId, 'orderNumber');
+    mergedCount += await deduplicateByField(userId, 'trackingNumber');
     return mergedCount;
 }
 // POST /api/orders/merge
@@ -135,6 +153,8 @@ router.post('/merge', auth_1.requireAuth, auth_1.requirePayment, async (req, res
             patch.emailBodyHtml = sec.emailBodyHtml;
         if (!primary.orderDate && sec.orderDate)
             patch.orderDate = sec.orderDate;
+        if (!primary.category && sec.category)
+            patch.category = sec.category;
     }
     // Status neu ableiten
     const finalTracking = patch.trackingNumber ?? primary.trackingNumber;
@@ -191,12 +211,15 @@ router.post('/:id/split', auth_1.requireAuth, auth_1.requirePayment, async (req,
     const newOrders = await prisma.$transaction(async (tx) => {
         const created = [];
         for (const em of emailsToSplit) {
+            const splitShop = em.gptShop || order.shop || 'Unbekannt';
+            const splitCategory = await (0, shopCategory_1.resolveOrderCategory)(userId, splitShop, em.gptCategory ?? null);
             // Neue Bestellung aus GPT-Daten der Email erzeugen
             const newOrder = await tx.order.create({
                 data: {
                     userId,
                     emailAccountId: order.emailAccountId,
-                    shop: em.gptShop || order.shop || 'Unbekannt',
+                    shop: splitShop,
+                    category: splitCategory,
                     orderNumber: em.gptOrderNumber ?? null,
                     trackingNumber: em.gptTrackingNumber ?? null,
                     carrier: em.gptCarrier ?? null,
@@ -273,38 +296,14 @@ router.post('/:id/refresh-tracking', auth_1.requireAuth, auth_1.requirePayment, 
     const order = await prisma.order.findFirst({
         where: { id: orderId, userId },
     });
-    if (!order)
-        return res.status(404).json({ error: 'Bestellung nicht gefunden' });
+    if (!order) {
+        return res.status(404).json({ error: 'Bestellung nicht gefunden', code: 'ORDER_NOT_FOUND' });
+    }
     if (!order.trackingNumber) {
         return res.status(400).json({ error: 'Keine Sendungsnummer vorhanden' });
     }
-    if (!order.carrier) {
-        return res.status(400).json({ error: 'Kein Transportunternehmen bekannt – Tracking nicht möglich' });
-    }
     try {
-        const result = await (0, tracking_1.getTrackingInfo)(order.trackingNumber, order.carrier || undefined);
-        const uniqueEvents = (0, normalization_1.dedupeEvents)(result.events);
-        await prisma.$transaction(async (tx) => {
-            await tx.trackingEvent.deleteMany({ where: { orderId: order.id } });
-            if (uniqueEvents.length > 0) {
-                await tx.trackingEvent.createMany({
-                    data: uniqueEvents.map((event) => ({
-                        orderId: order.id,
-                        timestamp: event.timestamp,
-                        location: event.location,
-                        status: event.status,
-                        description: event.description,
-                    })),
-                });
-            }
-            await tx.order.update({
-                where: { id: order.id },
-                data: {
-                    status: result.status,
-                    estimatedDelivery: result.estimatedDelivery || order.estimatedDelivery,
-                },
-            });
-        });
+        await (0, refreshOrder_1.refreshOrderTracking)(order.id, { sendPush: true });
         const updatedOrder = await prisma.order.findUnique({
             where: { id: order.id },
             include: { trackingEvents: { orderBy: { timestamp: 'desc' } } },
@@ -313,9 +312,9 @@ router.post('/:id/refresh-tracking', auth_1.requireAuth, auth_1.requirePayment, 
     }
     catch (err) {
         if (err instanceof types_1.TrackingProviderError) {
-            const statusCode = err.type === 'not_found' ? 404 : err.type === 'auth' ? 502 : 503;
-            return res.status(statusCode).json({
+            return res.status((0, types_1.trackingErrorStatusCode)(err.type)).json({
                 error: 'Tracking-Aktualisierung fehlgeschlagen',
+                code: `TRACKING_${err.type.toUpperCase()}`,
                 provider: err.provider,
                 type: err.type,
                 detail: err.message,
@@ -325,32 +324,94 @@ router.post('/:id/refresh-tracking', auth_1.requireAuth, auth_1.requirePayment, 
         return res.status(500).json({ error: 'Tracking-Aktualisierung fehlgeschlagen' });
     }
 });
-// PATCH /api/orders/:id  – Sendungsnummer, Spediteur und Status manuell setzen
+// PATCH /api/orders/:id  – Felder manuell setzen (Tracking, Kategorie, Preis, …)
 router.patch('/:id', auth_1.requireAuth, auth_1.requirePayment, async (req, res) => {
     const orderId = String(req.params.id);
     const userId = String(req.user.id);
     const order = await prisma.order.findFirst({ where: { id: orderId, userId } });
     if (!order)
         return res.status(404).json({ error: 'Bestellung nicht gefunden' });
-    const allowed = ['trackingNumber', 'carrier', 'status'];
-    const patch = {};
-    for (const key of allowed) {
-        if (key in req.body) {
-            patch[key] = req.body[key] === '' ? null : String(req.body[key]);
+    const updateData = {};
+    let hasFields = false;
+    if ('trackingNumber' in req.body) {
+        hasFields = true;
+        updateData.trackingNumber = req.body.trackingNumber === '' ? null : String(req.body.trackingNumber);
+    }
+    if ('carrier' in req.body) {
+        hasFields = true;
+        updateData.carrier = req.body.carrier === '' ? null : String(req.body.carrier);
+    }
+    if ('status' in req.body) {
+        hasFields = true;
+        updateData.status = req.body.status === '' ? null : String(req.body.status);
+    }
+    if ('price' in req.body) {
+        hasFields = true;
+        const raw = req.body.price;
+        if (raw === '' || raw == null) {
+            updateData.price = null;
+        }
+        else {
+            const price = typeof raw === 'number'
+                ? raw
+                : parseFloat(String(raw).trim().replace(',', '.'));
+            if (Number.isNaN(price) || price < 0) {
+                return res.status(400).json({ error: 'Ungültiger Preis' });
+            }
+            updateData.price = price;
         }
     }
-    if (Object.keys(patch).length === 0) {
+    if ('currency' in req.body) {
+        hasFields = true;
+        const cur = req.body.currency === '' || req.body.currency == null
+            ? null
+            : String(req.body.currency).trim().toUpperCase();
+        updateData.currency = cur;
+    }
+    let categoriesPropagated = 0;
+    const categoryTouched = 'category' in req.body;
+    let categoryValue;
+    if (categoryTouched) {
+        hasFields = true;
+        const raw = req.body.category === '' || req.body.category == null
+            ? null
+            : String(req.body.category);
+        if (raw !== null && !(0, orderCategories_1.isValidOrderCategory)(raw)) {
+            return res.status(400).json({ error: 'Ungültige Kategorie' });
+        }
+        categoryValue = raw;
+        updateData.category = raw;
+    }
+    if (!hasFields) {
         return res.status(400).json({ error: 'Keine gültigen Felder angegeben' });
+    }
+    const categoryChanged = categoryTouched
+        && (categoryValue ?? null) !== (order.category ?? null);
+    if (categoryChanged) {
+        updateData.categoryManual = true;
     }
     const updated = await prisma.order.update({
         where: { id: orderId },
-        data: patch,
+        data: updateData,
         include: {
             trackingEvents: { orderBy: { timestamp: 'desc' } },
             emailAccount: { select: { email: true, provider: true } },
+            orderEmails: { orderBy: { receivedAt: 'asc' } },
         },
     });
-    return res.json(updated);
+    if (categoryChanged) {
+        categoriesPropagated = await (0, shopCategory_1.applyShopCategoryAssignment)(userId, order.shop, categoryValue ?? null, orderId);
+    }
+    const newStatus = updateData.status ?? order.status;
+    const trackingNumber = updateData.trackingNumber ?? order.trackingNumber;
+    if (newStatus === 'delivered'
+        && order.status !== 'delivered'
+        && trackingNumber) {
+        void (0, trackingmore_1.deleteTrackingFromTrackingMore)(trackingNumber, {
+            carrier: updateData.carrier ?? order.carrier,
+        });
+    }
+    return res.json({ ...updated, categoriesPropagated });
 });
 // DELETE /api/orders/:id
 router.delete('/:id', auth_1.requireAuth, auth_1.requirePayment, async (req, res) => {

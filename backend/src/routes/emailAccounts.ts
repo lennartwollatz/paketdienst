@@ -11,6 +11,11 @@ import {
   LockReason,
 } from '../services/syncLock';
 import { deduplicateOrders } from './orders';
+import { notifyNewOrder } from '../services/push';
+import { runAccountSyncWithProgress } from '../services/accountSync';
+import type { SyncProgressPayload } from '../services/syncProgress';
+import { deleteTrackingFromTrackingMore } from '../services/tracking/providers/trackingmore';
+import { resolveOrderCategory } from '../services/shopCategory';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -163,6 +168,26 @@ async function getUnprocessedEmails(
   return result;
 }
 
+/** Sucht eine vorhandene Bestellung per Bestell- oder Sendungsnummer (Bestellnummer zuerst). */
+async function findExistingOrder(userId: string, orderInfo: OrderInfo) {
+  if (orderInfo.orderNumber) {
+    const byOrderNumber = await prisma.order.findFirst({
+      where: { userId, orderNumber: orderInfo.orderNumber },
+      orderBy: { orderDate: 'asc' },
+    });
+    if (byOrderNumber) return byOrderNumber;
+  }
+
+  if (orderInfo.trackingNumber) {
+    return prisma.order.findFirst({
+      where: { userId, trackingNumber: orderInfo.trackingNumber },
+      orderBy: { orderDate: 'asc' },
+    });
+  }
+
+  return null;
+}
+
 /** Baut den GPT-Daten-Block für einen OrderEmail-Datensatz */
 function gptFields(orderInfo: OrderInfo) {
   return {
@@ -176,6 +201,7 @@ function gptFields(orderInfo: OrderInfo) {
     gptDeliveryAddress:   orderInfo.deliveryAddress   ?? null,
     gptCurrency:          orderInfo.currency          ?? null,
     gptOrderDate:         orderInfo.orderDate         ? new Date(orderInfo.orderDate) : null,
+    gptCategory:          orderInfo.category          ?? null,
   };
 }
 
@@ -199,85 +225,102 @@ async function applyOrderInfo(
 
   if (!orderInfo.isOrder) return 'skipped';
 
-  // Bestellung mit gleicher Bestellnummer zusammenführen
-  if (orderInfo.orderNumber) {
-    const duplicate = await prisma.order.findFirst({
-      where: { userId, orderNumber: orderInfo.orderNumber },
+  // Bestellung mit gleicher Bestell- oder Sendungsnummer zusammenführen
+  const duplicate = await findExistingOrder(userId, orderInfo);
+
+  if (duplicate) {
+    // Alle leeren Felder auffüllen; "Unbekannt"-Platzhalter beim Shop ersetzen
+    const mergedShop = (duplicate.shop && duplicate.shop !== 'Unbekannt')
+      ? duplicate.shop
+      : (orderInfo.shop || duplicate.shop || 'Unbekannt');
+    const mergedOrderNumber = duplicate.orderNumber ?? orderInfo.orderNumber ?? null;
+    const mergedTracking = duplicate.trackingNumber ?? orderInfo.trackingNumber ?? null;
+    const mergedCarrier = duplicate.carrier ?? orderInfo.carrier ?? null;
+    const mergedPrice = duplicate.price ?? orderInfo.price ?? null;
+    const mergedCurrency = duplicate.currency ?? orderInfo.currency ?? 'EUR';
+    const mergedEstimatedDelivery = duplicate.estimatedDelivery
+      ?? (orderInfo.estimatedDelivery ? new Date(orderInfo.estimatedDelivery) : null);
+    const mergedDeliveryAddress = duplicate.deliveryAddress ?? orderInfo.deliveryAddress ?? null;
+    const mergedOrderDate = duplicate.orderDate
+      ?? (orderInfo.orderDate ? new Date(orderInfo.orderDate) : null);
+    // Den fortgeschrittensten bekannten E-Mail-Status bevorzugen
+    const mergedEmailStatus = pickMostAdvancedEmailStatus(
+      orderInfo.deliveryStatus,
+      duplicate.emailStatus,
+    );
+    const mergedStatus = deriveStatus(mergedTracking, mergedEmailStatus, mergedDeliveryAddress);
+    const mergedShopForCategory = (duplicate.shop && duplicate.shop !== 'Unbekannt')
+      ? duplicate.shop
+      : (orderInfo.shop || duplicate.shop || 'Unbekannt');
+    const mergedCategory = await resolveOrderCategory(
+      userId,
+      mergedShopForCategory,
+      orderInfo.category ?? null,
+      { category: duplicate.category, categoryManual: duplicate.categoryManual },
+    );
+
+    await prisma.order.update({
+      where: { id: duplicate.id },
+      data: {
+        shop:             mergedShop,
+        category:         mergedCategory,
+        orderNumber:      mergedOrderNumber,
+        trackingNumber:   mergedTracking,
+        carrier:          mergedCarrier,
+        price:            mergedPrice,
+        currency:         mergedCurrency,
+        estimatedDelivery: mergedEstimatedDelivery,
+        deliveryAddress:  mergedDeliveryAddress,
+        orderDate:        mergedOrderDate ?? undefined,
+        emailStatus:      mergedEmailStatus,
+        status:           mergedStatus,
+        emailBody:        duplicate.emailBody ?? email.text ?? null,
+        emailBodyHtml:    duplicate.emailBodyHtml ?? email.html ?? null,
+      },
     });
 
-    if (duplicate) {
-      // Alle leeren Felder auffüllen; "Unbekannt"-Platzhalter beim Shop ersetzen
-      const mergedShop = (duplicate.shop && duplicate.shop !== 'Unbekannt')
-        ? duplicate.shop
-        : (orderInfo.shop || duplicate.shop || 'Unbekannt');
-      const mergedTracking = duplicate.trackingNumber ?? orderInfo.trackingNumber ?? null;
-      const mergedCarrier = duplicate.carrier ?? orderInfo.carrier ?? null;
-      const mergedPrice = duplicate.price ?? orderInfo.price ?? null;
-      const mergedCurrency = duplicate.currency ?? orderInfo.currency ?? 'EUR';
-      const mergedEstimatedDelivery = duplicate.estimatedDelivery
-        ?? (orderInfo.estimatedDelivery ? new Date(orderInfo.estimatedDelivery) : null);
-      const mergedDeliveryAddress = duplicate.deliveryAddress ?? orderInfo.deliveryAddress ?? null;
-      const mergedOrderDate = duplicate.orderDate
-        ?? (orderInfo.orderDate ? new Date(orderInfo.orderDate) : null);
-      // Den fortgeschrittensten bekannten E-Mail-Status bevorzugen
-      const mergedEmailStatus = pickMostAdvancedEmailStatus(
-        orderInfo.deliveryStatus,
-        duplicate.emailStatus,
-      );
-      const mergedStatus = deriveStatus(mergedTracking, mergedEmailStatus, mergedDeliveryAddress);
+    // E-Mail-Inhalt + GPT-Daten dieser zusammengeführten Mail speichern
+    await prisma.orderEmail.create({
+      data: {
+        orderId:    duplicate.id,
+        subject:    normalizeSubject(email.subject),
+        fromAddress: email.from,
+        receivedAt: email.date,
+        bodyText:   email.text || null,
+        bodyHtml:   email.html ?? null,
+        ...gptFields(orderInfo),
+      },
+    });
 
-      await prisma.order.update({
-        where: { id: duplicate.id },
+    for (const att of email.attachments) {
+      await prisma.orderAttachment.create({
         data: {
-          shop:             mergedShop,
-          trackingNumber:   mergedTracking,
-          carrier:          mergedCarrier,
-          price:            mergedPrice,
-          currency:         mergedCurrency,
-          estimatedDelivery: mergedEstimatedDelivery,
-          deliveryAddress:  mergedDeliveryAddress,
-          orderDate:        mergedOrderDate ?? undefined,
-          emailStatus:      mergedEmailStatus,
-          status:           mergedStatus,
-          emailBody:        duplicate.emailBody ?? email.text ?? null,
-          emailBodyHtml:    duplicate.emailBodyHtml ?? email.html ?? null,
+          orderId: duplicate.id,
+          filename: att.filename,
+          mimeType: att.mimeType,
+          sizeBytes: att.sizeBytes || att.data.byteLength,
+          data: att.data,
         },
       });
-
-      // E-Mail-Inhalt + GPT-Daten dieser zusammengeführten Mail speichern
-      await prisma.orderEmail.create({
-        data: {
-          orderId:    duplicate.id,
-          subject:    normalizeSubject(email.subject),
-          fromAddress: email.from,
-          receivedAt: email.date,
-          bodyText:   email.text || null,
-          bodyHtml:   email.html || null,
-          ...gptFields(orderInfo),
-        },
-      });
-
-      for (const att of email.attachments) {
-        await prisma.orderAttachment.create({
-          data: {
-            orderId: duplicate.id,
-            filename: att.filename,
-            mimeType: att.mimeType,
-            sizeBytes: att.sizeBytes || att.data.byteLength,
-            data: att.data,
-          },
-        });
-      }
-      return 'merged';
     }
+
+    if (mergedStatus === 'delivered' && mergedTracking && duplicate.status !== 'delivered') {
+      void deleteTrackingFromTrackingMore(mergedTracking, { carrier: mergedCarrier });
+    }
+
+    return 'merged';
   }
 
   // Neue Bestellung anlegen
+  const newShop = orderInfo.shop || 'Unbekannt';
+  const newCategory = await resolveOrderCategory(userId, newShop, orderInfo.category ?? null);
+
   const order = await prisma.order.create({
     data: {
       userId,
       emailAccountId: accountId,
-      shop: orderInfo.shop || 'Unbekannt',
+      shop: newShop,
+      category: newCategory,
       orderNumber: orderInfo.orderNumber,
       trackingNumber: orderInfo.trackingNumber,
       carrier: orderInfo.carrier,
@@ -316,6 +359,17 @@ async function applyOrderInfo(
       },
     });
   }
+
+  if (order.status === 'delivered' && order.trackingNumber) {
+    void deleteTrackingFromTrackingMore(order.trackingNumber, { carrier: order.carrier });
+  }
+
+  await notifyNewOrder(userId, {
+    id: order.id,
+    shop: order.shop,
+    orderNumber: order.orderNumber,
+    trackingNumber: order.trackingNumber,
+  });
 
   return 'new';
 }
@@ -463,152 +517,104 @@ router.patch('/:id', requireAuth, requirePayment, async (req: AuthRequest, res: 
   }
 });
 
-// POST /api/email-accounts/:id/sync
-router.post('/:id/sync', requireAuth, requirePayment, async (req: AuthRequest, res: Response) => {
-  const accountId = String(req.params.id);
-  const userId = String(req.user!.id);
+const accountSyncDeps = {
+  decryptPassword,
+  getUnprocessedEmails,
+  applyOrderInfo,
+};
 
+function wantsSyncStream(req: AuthRequest): boolean {
+  return req.headers.accept?.includes('text/event-stream') === true;
+}
+
+function writeSyncSse(res: Response, payload: unknown): void {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+async function handleAccountSync(
+  req: AuthRequest,
+  res: Response,
+  accountId: string,
+  options: { fullResync?: boolean },
+): Promise<void> {
+  const userId = String(req.user!.id);
+  const stream = wantsSyncStream(req);
   const lock = tryAcquireSyncLock(userId);
-  if (!lock.ok) return syncLockResponse(res, lock.reason);
+  if (!lock.ok) {
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      writeSyncSse(res, {
+        type: 'error',
+        error: lock.reason === 'busy_user'
+          ? 'Es läuft bereits ein Sync für deinen Account.'
+          : 'Zu viele gleichzeitige Syncs. Bitte später erneut versuchen.',
+      });
+      res.end();
+    } else {
+      syncLockResponse(res, lock.reason);
+    }
+    return;
+  }
 
   try {
-    const account = await prisma.emailAccount.findFirst({
-      where: { id: accountId, userId },
-    });
-
-    if (!account) return res.status(404).json({ error: 'Konto nicht gefunden' });
-
-    const password = decryptPassword(account.passwordEncrypted);
-    let blockedFolders: string[] = [];
-    try { blockedFolders = JSON.parse(account.blockedFolders); } catch { blockedFolders = []; }
-
-    // Vollsync: letzte 2 Monate; Deltasync: seit letztem Sync (mit 1h Puffer)
-    const isFirstSync = !account.lastSyncAt;
-    const twoMonthsAgo = new Date();
-    twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-
-    const fetchOptions = isFirstSync
-      ? { sinceDate: twoMonthsAgo, blockedFolders }
-      : { sinceDate: new Date(account.lastSyncAt!.getTime() - 60 * 60 * 1000), blockedFolders };
-
-    console.log(`Starte ${isFirstSync ? 'Vollsync (letzte 2 Monate)' : 'Deltasync'} für ${account.email}`);
-
-    const emails = await fetchEmails(
-      { host: account.imapHost, port: account.imapPort, username: account.username, password },
-      fetchOptions,
-    );
-
-    // 1. Nur unverarbeitete E-Mails herausfiltern
-    const unprocessed = await getUnprocessedEmails(emails, userId, account.id);
-    const processed = emails.length;
-
-    let newOrders = 0;
-    let mergedOrders = 0;
-
-    if (unprocessed.length > 0) {
-      // 2. Alle auf einmal via Batch API analysieren (spart 50 % Kosten)
-      const analysisMap = await analyzeEmailsBatch(unprocessed.map(u => u.email));
-
-      // 3. Ergebnisse speichern
-      for (const { email, rawEmailId } of unprocessed) {
-        const orderInfo = analysisMap.get(email.uid) ?? { isOrder: false };
-        const result = await applyOrderInfo(email, rawEmailId, orderInfo, userId, account.id);
-        if (result === 'new') newOrders++;
-        if (result === 'merged') mergedOrders++;
-      }
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders?.();
     }
 
-    await prisma.emailAccount.update({
-      where: { id: account.id },
-      data: { lastSyncAt: new Date() },
-    });
+    const onProgress = stream
+      ? (event: SyncProgressPayload) => writeSyncSse(res, event)
+      : () => {};
 
-    // Automatisch Duplikate zusammenführen
-    const dedupCount = await deduplicateOrders(userId);
-    mergedOrders += dedupCount;
+    const result = await runAccountSyncWithProgress(
+      accountSyncDeps,
+      accountId,
+      userId,
+      options,
+      onProgress,
+    );
 
-    return res.json({
-      message: `Sync abgeschlossen: ${processed} E-Mails verarbeitet, ${newOrders} neue Bestellungen, ${mergedOrders} zusammengeführt.`,
-      processed,
-      newOrders,
-      mergedOrders,
-    });
+    if (stream) {
+      writeSyncSse(res, { type: 'complete', ...result });
+      res.end();
+      return;
+    }
+
+    res.json(result);
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: extractSyncError(err) });
+    const message = extractSyncError(err);
+    if (stream) {
+      writeSyncSse(res, { type: 'error', error: message });
+      res.end();
+      return;
+    }
+    res.status(500).json({ error: message });
   } finally {
     lock.release();
   }
+}
+
+// POST /api/email-accounts/:id/sync
+router.post('/:id/sync', requireAuth, requirePayment, async (req: AuthRequest, res: Response) => {
+  const account = await prisma.emailAccount.findFirst({
+    where: { id: String(req.params.id), userId: req.user!.id },
+  });
+  if (!account) return res.status(404).json({ error: 'Konto nicht gefunden' });
+  await handleAccountSync(req, res, String(req.params.id), {});
 });
 
 // POST /api/email-accounts/:id/resync
 // Setzt alle verarbeiteten E-Mails zurück und startet einen kompletten Neusync
 router.post('/:id/resync', requireAuth, requirePayment, async (req: AuthRequest, res: Response) => {
-  const accountId = String(req.params.id);
-  const userId = String(req.user!.id);
-
-  const lock = tryAcquireSyncLock(userId);
-  if (!lock.ok) return syncLockResponse(res, lock.reason);
-
-  try {
-    const account = await prisma.emailAccount.findFirst({ where: { id: accountId, userId } });
-    if (!account) return res.status(404).json({ error: 'Konto nicht gefunden' });
-
-    // 1. Alle ProcessedEmail-Einträge dieses Kontos löschen
-    await prisma.processedEmail.deleteMany({
-      where: { userId, rawEmailId: { contains: accountId } },
-    });
-
-    // 2. Alle Bestellungen dieses Kontos löschen
-    await prisma.order.deleteMany({ where: { userId, emailAccountId: accountId } });
-
-    // 3. lastSyncAt zurücksetzen → nächster Sync wird als Vollsync ausgeführt
-    await prisma.emailAccount.update({
-      where: { id: accountId },
-      data: { lastSyncAt: null },
-    });
-
-    // 4. Vollsync der letzten 2 Monate sofort starten
-    const password = decryptPassword(account.passwordEncrypted);
-    let blockedFolders: string[] = [];
-    try { blockedFolders = JSON.parse(account.blockedFolders); } catch { blockedFolders = []; }
-    const twoMonthsAgo = new Date();
-    twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-    const emails = await fetchEmails(
-      { host: account.imapHost, port: account.imapPort, username: account.username, password },
-      { sinceDate: twoMonthsAgo, blockedFolders },
-    );
-
-    const unprocessed = await getUnprocessedEmails(emails, userId, accountId);
-    let newOrders = 0;
-    let mergedOrders = 0;
-
-    if (unprocessed.length > 0) {
-      const analysisMap = await analyzeEmailsBatch(unprocessed.map(u => u.email));
-      for (const { email, rawEmailId } of unprocessed) {
-        const orderInfo = analysisMap.get(email.uid) ?? { isOrder: false };
-        const result = await applyOrderInfo(email, rawEmailId, orderInfo, userId, accountId);
-        if (result === 'new') newOrders++;
-        if (result === 'merged') mergedOrders++;
-      }
-    }
-
-    await prisma.emailAccount.update({ where: { id: accountId }, data: { lastSyncAt: new Date() } });
-    const dedupCount = await deduplicateOrders(userId);
-    mergedOrders += dedupCount;
-
-    return res.json({
-      message: `Neusync abgeschlossen: ${emails.length} E-Mails verarbeitet, ${newOrders} Bestellungen gefunden.`,
-      processed: emails.length,
-      newOrders,
-      mergedOrders,
-    });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: extractSyncError(err) });
-  } finally {
-    lock.release();
-  }
+  const account = await prisma.emailAccount.findFirst({
+    where: { id: String(req.params.id), userId: req.user!.id },
+  });
+  if (!account) return res.status(404).json({ error: 'Konto nicht gefunden' });
+  await handleAccountSync(req, res, String(req.params.id), { fullResync: true });
 });
 
 // POST /api/email-accounts/sync-all

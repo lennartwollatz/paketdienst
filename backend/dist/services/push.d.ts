@@ -20,4 +20,11 @@ export interface PushPayload {
  * Abgelaufene Subscriptions (404/410) werden automatisch entfernt.
  */
 export declare function sendPushToUser(userId: string, payload: PushPayload): Promise<number>;
+/** Push-Benachrichtigung, wenn beim E-Mail-Sync eine neue Bestellung erkannt wurde. */
+export declare function notifyNewOrder(userId: string, order: {
+    id: string;
+    shop: string;
+    orderNumber?: string | null;
+    trackingNumber?: string | null;
+}): Promise<void>;
 //# sourceMappingURL=push.d.ts.map

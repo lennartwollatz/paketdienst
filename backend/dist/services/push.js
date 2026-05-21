@@ -7,6 +7,7 @@ exports.initPushService = initPushService;
 exports.isPushConfigured = isPushConfigured;
 exports.getVapidPublicKey = getVapidPublicKey;
 exports.sendPushToUser = sendPushToUser;
+exports.notifyNewOrder = notifyNewOrder;
 const web_push_1 = __importDefault(require("web-push"));
 const client_1 = require("@prisma/client");
 const prisma = new client_1.PrismaClient();
@@ -69,5 +70,28 @@ async function sendPushToUser(userId, payload) {
         }
     }));
     return delivered;
+}
+/** Push-Benachrichtigung, wenn beim E-Mail-Sync eine neue Bestellung erkannt wurde. */
+async function notifyNewOrder(userId, order) {
+    const shop = order.shop && order.shop !== 'Unbekannt' ? order.shop : 'Unbekannt';
+    let body = `Eine neue Bestellung bei ${shop} wurde in deiner E-Mail erkannt.`;
+    if (order.trackingNumber) {
+        body = `Neue Bestellung bei ${shop} – Sendungsnummer ${order.trackingNumber}.`;
+    }
+    else if (order.orderNumber) {
+        body = `Neue Bestellung bei ${shop} – Bestellnummer ${order.orderNumber}.`;
+    }
+    try {
+        await sendPushToUser(userId, {
+            title: `Neue Bestellung: ${shop}`,
+            body,
+            url: `/orders/${order.id}`,
+            tag: `order-new-${order.id}`,
+            data: { orderId: order.id, type: 'new_order' },
+        });
+    }
+    catch (err) {
+        console.error('[push] Neue-Bestellung-Benachrichtigung fehlgeschlagen:', err.message);
+    }
 }
 //# sourceMappingURL=push.js.map

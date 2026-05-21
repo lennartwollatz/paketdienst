@@ -9,6 +9,9 @@ import ResetPassword from './pages/ResetPassword';
 import PaymentSetup from './pages/PaymentSetup';
 import Home from './pages/Home';
 import OrderDetail from './pages/OrderDetail';
+import Analytics from './pages/Analytics';
+import AnalyticsOrders from './pages/AnalyticsOrders';
+import ScrollRestoration from './components/ScrollRestoration';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { token } = useAuthStore();
@@ -27,6 +30,7 @@ function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <BrowserRouter basename={routerBasename()}>
+      <ScrollRestoration />
       <Toaster
         position="top-center"
         toastOptions={{
@@ -49,6 +53,9 @@ export default function App() {
           element={<PrivateRoute><PaymentSetup /></PrivateRoute>}
         />
         <Route path="/" element={<PrivateRoute><Home /></PrivateRoute>} />
+        <Route path="/analytics" element={<PrivateRoute><Analytics /></PrivateRoute>} />
+        <Route path="/analytics/orders" element={<PrivateRoute><AnalyticsOrders /></PrivateRoute>} />
+        <Route path="/expenses" element={<Navigate to="/analytics" replace />} />
         <Route path="/orders/:id" element={<PrivateRoute><OrderDetail /></PrivateRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

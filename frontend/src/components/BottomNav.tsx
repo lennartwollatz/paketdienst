@@ -1,8 +1,10 @@
-import { Mail, Package, Settings } from 'lucide-react';
+import { Mail, Package, Settings, BarChart3 } from 'lucide-react';
+
+export type BottomNavTab = 'emails' | 'orders' | 'analytics';
 
 interface BottomNavProps {
-  activeTab: 'emails' | 'orders';
-  onTabChange: (tab: 'emails' | 'orders') => void;
+  activeTab: BottomNavTab | 'settings';
+  onTabChange: (tab: BottomNavTab) => void;
   onSettings: () => void;
   showSettings: boolean;
 }
@@ -11,11 +13,12 @@ export default function BottomNav({ activeTab, onTabChange, onSettings, showSett
   const tabs = [
     { id: 'emails' as const, label: 'E-Mails',      Icon: Mail },
     { id: 'orders' as const, label: 'Bestellungen', Icon: Package },
+    { id: 'analytics' as const, label: 'Analytics', Icon: BarChart3 },
   ];
 
   return (
     <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-white border-t border-gray-100 safe-bottom z-20">
-      <div className="grid grid-cols-3">
+      <div className="grid grid-cols-4">
         {tabs.map(({ id, label, Icon }) => {
           const active = activeTab === id && !showSettings;
           return (

@@ -195,10 +195,57 @@ interface TmGetEnvelope extends TmEnvelopeMeta {
 // Lazy-initialisiert, damit fehlende API-Keys erst beim ersten Aufruf auffallen
 type TmSdk = {
   couriers:  { detect: (p: object) => Promise<TmDetectResult> };
-  trackings: { createTracking: (p: object) => Promise<TmCreateResult> };
+  trackings: {
+    createTracking: (p: object) => Promise<TmCreateResult>;
+    deleteTrackingByID: (id: string) => Promise<TmEnvelopeMeta>;
+  };
 };
 
 let _sdk: TmSdk | null = null;
+
+const TM_LOG_PREFIX = '[TrackingMore API]';
+const TM_LOG_BODY_MAX = 12_000;
+
+/** Detailliertes Request/Response-Logging (Standard: an außer NODE_ENV=production). */
+function tmLogEnabled(): boolean {
+  const flag = process.env.TRACKINGMORE_DEBUG_LOG?.trim().toLowerCase();
+  if (flag === 'true' || flag === '1' || flag === 'yes') return true;
+  if (flag === 'false' || flag === '0' || flag === 'no') return false;
+  return process.env.NODE_ENV !== 'production';
+}
+
+function tmSafeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function tmTruncate(text: string, max = TM_LOG_BODY_MAX): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}\n… (${text.length - max} weitere Zeichen gekürzt)`;
+}
+
+function tmLogRequest(method: string, endpoint: string, payload?: unknown): void {
+  if (!tmLogEnabled()) return;
+  console.log(`${TM_LOG_PREFIX} → ${method} ${endpoint}`);
+  if (payload !== undefined) {
+    console.log(`${TM_LOG_PREFIX}   Anfrage:\n${tmTruncate(tmSafeJson(payload))}`);
+  }
+}
+
+function tmLogResponse(
+  endpoint: string,
+  status: number | string,
+  body: unknown,
+  extra?: string,
+): void {
+  if (!tmLogEnabled()) return;
+  const suffix = extra ? ` (${extra})` : '';
+  console.log(`${TM_LOG_PREFIX} ← ${endpoint} [${status}]${suffix}`);
+  console.log(`${TM_LOG_PREFIX}   Antwort:\n${tmTruncate(tmSafeJson(body))}`);
+}
 
 function getSdk(): TmSdk {
   if (!_sdk) {
@@ -211,9 +258,30 @@ function getSdk(): TmSdk {
 
 // ─── Hilfsfunktionen ─────────────────────────────────────────────────────────
 
-function mapCarrierKey(carrier: string): string | null {
-  const key = carrier.trim().toLowerCase();
-  return CARRIER_CODE_MAP[key] ?? null;
+/** Carrier immer über TrackingMore couriers/detect ermitteln – unabhängig von E-Mail-Daten. */
+async function detectCourierCode(
+  sdk: TmSdk,
+  trackingNumber: string,
+): Promise<{ courierCode: string; courierName: string } | null> {
+  const detectPayload = { tracking_number: trackingNumber };
+  try {
+    tmLogRequest('POST', '/v4/couriers/detect', detectPayload);
+    const detected = await sdk.couriers.detect(detectPayload);
+    const dCode = envelopeMetaCode(detected) ?? detected.code;
+    tmLogResponse('/v4/couriers/detect', dCode ?? 'ok', detected);
+    const detectOk = dCode === undefined || dCode === 200;
+    if (detectOk && detected.data && detected.data.length > 0) {
+      const { courier_code, courier_name } = detected.data[0];
+      console.log(`[TrackingMore] Erkannt: ${courier_code} (${courier_name})`);
+      return { courierCode: courier_code, courierName: courier_name };
+    }
+  } catch (err) {
+    console.warn('[TrackingMore] Carrier-Erkennung fehlgeschlagen:', err);
+    if (tmLogEnabled()) {
+      console.warn(`${TM_LOG_PREFIX}   Fehler couriers/detect:`, err);
+    }
+  }
+  return null;
 }
 
 /**
@@ -305,6 +373,26 @@ function envelopeMetaCode(env: unknown): number | undefined {
   return e.meta?.code ?? e.code;
 }
 
+function envelopeMetaMessage(env: unknown): string | undefined {
+  if (!env || typeof env !== 'object') return undefined;
+  const e = env as TmEnvelopeMeta;
+  return e.meta?.message ?? e.message;
+}
+
+function throwIfTmError(envelope: unknown, context: string): void {
+  const code = envelopeMetaCode(envelope);
+  if (code === undefined || code === 200 || code === 4101) return;
+
+  const msg = envelopeMetaMessage(envelope) ?? `TrackingMore ${context} (Code ${code})`;
+
+  if (code === 401 || code === 403) {
+    throw new TrackingProviderError('trackingmore', 'auth', msg);
+  }
+  if (code === 4190 || code === 429) {
+    throw new TrackingProviderError('trackingmore', 'rate_limit', msg, true);
+  }
+}
+
 /** v4: Checkpoints oft unter origin_info.trackinfo / destination_info.trackinfo */
 function collectCheckpoints(tracking: TmTrackingItem): TmCheckpoint[] {
   const out: TmCheckpoint[] = [];
@@ -352,18 +440,19 @@ async function getTrackingData(
   trackingNumber: string,
   courierCode: string,
 ): Promise<TmGetEnvelope> {
-  const apiKey = process.env.TRACKINGMORE_API_KEY!;
   const url = `https://api.trackingmore.com/v4/trackings/get?tracking_numbers=${encodeURIComponent(trackingNumber)}&courier_code=${encodeURIComponent(courierCode)}`;
   const timeoutMs = Number(process.env.TRACKING_PROVIDER_TIMEOUT_MS || 12000);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  tmLogRequest('GET', url);
 
   let response: Response;
   try {
     response = await fetch(url, {
       method: 'GET',
       headers: {
-        'Tracking-Api-Key': apiKey,
+        'Tracking-Api-Key': process.env.TRACKINGMORE_API_KEY!,
         'Accept': 'application/json',
       },
       signal: controller.signal,
@@ -371,11 +460,22 @@ async function getTrackingData(
   } catch (err: unknown) {
     clearTimeout(timer);
     const isAbort = err instanceof Error && err.name === 'AbortError';
+    if (tmLogEnabled()) {
+      console.error(`${TM_LOG_PREFIX} ← GET trackings/get [${isAbort ? 'timeout' : 'network'}]`, err);
+    }
     throw new TrackingProviderError('trackingmore', isAbort ? 'timeout' : 'network', String(err));
   }
   clearTimeout(timer);
 
   const body = await response.text().catch(() => '');
+  let parsedBody: unknown = body;
+  try {
+    parsedBody = body ? JSON.parse(body) : {};
+  } catch {
+    parsedBody = { _raw: body };
+  }
+  tmLogResponse('/v4/trackings/get', response.status, parsedBody);
+
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
       throw new TrackingProviderError('trackingmore', 'auth', `TrackingMore API Key ungültig (HTTP ${response.status})`);
@@ -386,11 +486,7 @@ async function getTrackingData(
     throw new TrackingProviderError('trackingmore', 'unknown', `TrackingMore GET Fehler ${response.status}: ${body.slice(0, 300)}`);
   }
 
-  try {
-    return JSON.parse(body) as TmGetEnvelope;
-  } catch {
-    throw new TrackingProviderError('trackingmore', 'unknown', `TrackingMore Antwort kein JSON: ${body.slice(0, 200)}`);
-  }
+  return parsedBody as TmGetEnvelope;
 }
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -403,31 +499,20 @@ export class TrackingMoreProvider implements TrackingProvider {
     return Boolean(process.env.TRACKINGMORE_API_KEY);
   }
 
-  async fetchTracking(trackingNumber: string, carrier?: string): Promise<TrackingResult> {
+  async fetchTracking(trackingNumber: string): Promise<TrackingResult> {
     if (!this.isConfigured()) {
       throw new TrackingProviderError(this.providerName, 'auth', 'TRACKINGMORE_API_KEY fehlt in .env');
     }
 
     const sdk = getSdk();
 
-    // ── 1. Carrier-Code ermitteln ─────────────────────────────────────────────
-    let courierCode: string | null = carrier ? mapCarrierKey(carrier) : null;
-
-    if (!courierCode) {
-      // Unbekannter Carrier → automatische Erkennung über API
-      console.log(`[TrackingMore] Carrier "${carrier ?? '–'}" unbekannt → automatische Erkennung für ${trackingNumber}`);
-      try {
-        const detected = await sdk.couriers.detect({ tracking_number: trackingNumber });
-        const dCode = envelopeMetaCode(detected) ?? detected.code;
-        const detectOk = dCode === undefined || dCode === 200;
-        if (detectOk && detected.data && detected.data.length > 0) {
-          courierCode = detected.data[0].courier_code;
-          console.log(`[TrackingMore] Erkannt: ${courierCode} (${detected.data[0].courier_name})`);
-        }
-      } catch (err) {
-        console.warn('[TrackingMore] Carrier-Erkennung fehlgeschlagen:', err);
-      }
+    if (tmLogEnabled()) {
+      console.log(`${TM_LOG_PREFIX} ══ Tracking-Abfrage: ${trackingNumber} ══`);
     }
+
+    // ── 1. Carrier-Code immer über API ermitteln ────────────────────────────
+    const detected = await detectCourierCode(sdk, trackingNumber);
+    const courierCode = detected?.courierCode ?? null;
 
     if (!courierCode) {
       throw new TrackingProviderError(
@@ -438,18 +523,18 @@ export class TrackingMoreProvider implements TrackingProvider {
 
     // ── 2. Tracking registrieren (createTracking); Payload enthält oft bereits alle Daten ───
     let createEnvelope: TmCreateResult | null = null;
+    const createPayload = { tracking_number: trackingNumber, courier_code: courierCode };
     try {
-      createEnvelope = await sdk.trackings.createTracking({
-        tracking_number: trackingNumber,
-        courier_code:    courierCode,
-      });
+      tmLogRequest('POST', '/v4/trackings/create', createPayload);
+      createEnvelope = await sdk.trackings.createTracking(createPayload);
       const cc = envelopeMetaCode(createEnvelope);
-      // v4: Erfolg meist unter meta.code; Root-code oft nicht gesetzt
-      if (cc !== undefined && cc !== 200 && cc !== 4101) {
-        console.warn(`[TrackingMore] createTracking meta.code ${String(cc)}`);
-      }
+      tmLogResponse('/v4/trackings/create', cc ?? 'ok', createEnvelope);
+      throwIfTmError(createEnvelope, 'createTracking');
     } catch (err) {
       console.warn('[TrackingMore] createTracking Fehler (ignoriert):', err);
+      if (tmLogEnabled()) {
+        console.warn(`${TM_LOG_PREFIX}   Fehler trackings/create:`, err);
+      }
     }
 
     // ── 3. Tracking-Status abrufen (GET); Fallback: Daten aus createTracking ─────────────
@@ -466,9 +551,16 @@ export class TrackingMoreProvider implements TrackingProvider {
     }
 
     if (trackingItems.length === 0) {
+      const createCode = createEnvelope ? envelopeMetaCode(createEnvelope) : undefined;
+      const hint =
+        createCode === 4190
+          ? ' TrackingMore-Kontingent erschöpft – Plan upgraden oder später erneut versuchen.'
+          : createCode === 401
+            ? ' TrackingMore API-Key ungültig oder abgelaufen.'
+            : '';
       throw new TrackingProviderError(
         this.providerName, 'not_found',
-        `Keine Daten für Sendung ${trackingNumber} (${courierCode})`,
+        `Keine Tracking-Daten für Sendung ${trackingNumber} (${courierCode}).${hint}`,
       );
     }
 
@@ -537,6 +629,76 @@ export class TrackingMoreProvider implements TrackingProvider {
       status:            internalStatusToDb(internalStatus),
       events,
       estimatedDelivery,
+      detectedCarrier:   detected?.courierName,
+      courierCode,
     };
+  }
+}
+
+// ─── Tracking bei TrackingMore entfernen (Bestellung bleibt lokal) ─────────────
+
+function resolveCourierCodeFromCarrier(carrier: string | null | undefined): string | null {
+  if (!carrier?.trim()) return null;
+  const key = carrier.trim().toLowerCase();
+  return CARRIER_CODE_MAP[key] ?? null;
+}
+
+/**
+ * Entfernt eine Sendung aus dem TrackingMore-Konto (API delete by ID).
+ * Lokale Bestellungen und Tracking-Events werden nicht gelöscht.
+ * Fehler werden geloggt, werfen aber keine Exception (idempotent).
+ */
+export async function deleteTrackingFromTrackingMore(
+  trackingNumber: string,
+  options: { courierCode?: string | null; carrier?: string | null } = {},
+): Promise<void> {
+  if (!process.env.TRACKINGMORE_API_KEY?.trim()) return;
+
+  const tn = trackingNumber?.trim();
+  if (!tn) return;
+
+  let courierCode =
+    options.courierCode?.trim()
+    || resolveCourierCodeFromCarrier(options.carrier)
+    || null;
+
+  const sdk = getSdk();
+
+  if (!courierCode) {
+    const detected = await detectCourierCode(sdk, tn);
+    courierCode = detected?.courierCode ?? null;
+  }
+
+  if (!courierCode) {
+    console.warn(`[TrackingMore] Löschen übersprungen – kein Carrier für ${tn}`);
+    return;
+  }
+
+  let tmId: string | null = null;
+  try {
+    const result = await getTrackingData(tn, courierCode);
+    const items = extractTrackingsFromEnvelope(result);
+    tmId = items[0]?.id ?? null;
+  } catch (err) {
+    console.warn('[TrackingMore] GET vor Löschen fehlgeschlagen:', (err as Error).message);
+  }
+
+  if (!tmId) {
+    console.log(`[TrackingMore] Nichts zu löschen (keine TM-ID) für ${tn}`);
+    return;
+  }
+
+  try {
+    tmLogRequest('DELETE', `/v4/trackings/delete/${tmId}`);
+    const envelope = await sdk.trackings.deleteTrackingByID(tmId);
+    const code = envelopeMetaCode(envelope);
+    tmLogResponse(`/v4/trackings/delete/${tmId}`, code ?? 'ok', envelope);
+    if (code !== undefined && code !== 200 && code !== 4102) {
+      console.warn(`[TrackingMore] Löschen von ${tn} (Code ${code}):`, envelopeMetaMessage(envelope));
+    } else {
+      console.log(`[TrackingMore] Sendung ${tn} aus TrackingMore entfernt`);
+    }
+  } catch (err) {
+    console.warn('[TrackingMore] deleteTrackingByID fehlgeschlagen:', (err as Error).message);
   }
 }
