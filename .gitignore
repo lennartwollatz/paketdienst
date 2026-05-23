@@ -4,4 +4,7 @@ deploy.config
 backups/
 backend/dev.db
 backend/dev.db-journal
-
+backend/prisma/dev.db
+backend/prod.db
+backend/prod.db-journal
+backend/prisma/prod.db
