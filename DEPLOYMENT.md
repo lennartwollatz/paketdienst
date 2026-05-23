@@ -80,7 +80,8 @@ Such den `location`-Block für `/paketdienst`. Entweder:
 
 - **`alias /var/www/beispiel/;`** → dort muss **`index.html`** aus `dist/` liegen, Struktur exakt zur `alias`-Dokumentation,  
   oder
-- **`root /var/www/html;`** unter `location /paketdienst/` → Dateien oft unter **`/var/www/html/paketdienst/`**.
+- **`root /var/www/html;`** unter `location /paketdienst/` → Dateien oft unter **`/var/www/html/paketdienst/`**,
+  oder **`alias /var/www/paketdienst/;`** wenn der Deploy-Zielordner direkt unter **`/var/www/paketdienst`** liegt.
 
 Nach dem Kopieren oft **kein** `nginx reload` nötig, nur wenn sich die Konfig ändert.
 

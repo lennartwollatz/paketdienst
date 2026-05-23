@@ -7,7 +7,7 @@
 REPO_DIR="/home/DEIN_USER/paketdienst"
 
 # Zielordner für das gebaute Frontend (Nginx root/alias für /paketdienst/)
-FRONTEND_DEPLOY_DIR="/var/www/html/paketdienst"
+FRONTEND_DEPLOY_DIR="/var/www/paketdienst"
 
 # Backend neu starten: systemd | pm2 | none
 BACKEND_RESTART_MODE="systemd"
