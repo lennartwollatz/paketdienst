@@ -78,7 +78,8 @@ export function analyzeDhlStatusFallback(sendungsverlaufText: string): DhlStatus
 }
 
 /**
- * Analysiert den extrahierten DHL-Sendungsverlauf per KI und mappt auf die App-Stati.
+ * Sendet den programmatisch extrahierten Sendungsverlauf an ChatGPT,
+ * um den aktuellen Lieferstatus zu ermitteln.
  */
 export async function analyzeDhlTrackingStatus(
   sendungsverlaufText: string,
@@ -95,7 +96,7 @@ export async function analyzeDhlTrackingStatus(
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'user',
-          content: `Detaillierter Sendungsverlauf:\n\n${sendungsverlaufText}`,
+          content: sendungsverlaufText,
         },
       ],
       temperature: 0,

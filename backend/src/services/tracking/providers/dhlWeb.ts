@@ -4,7 +4,7 @@ import { TrackingEvent, TrackingProvider, TrackingProviderError, TrackingResult 
 
 const DHL_TRACKING_PAGE_BASE =
   'https://www.dhl.de/de/privatkunden/dhl-sendungsverfolgung.html';
-const DHL_DATA_API_BASE = 'https://www.dhl.de/int-verfolgen/data/search';
+const DEFAULT_DATA_PATH = '/int-verfolgen/data';
 
 const BROWSER_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
@@ -42,17 +42,23 @@ export interface ExtractedDhlSendungsverlauf {
   kurzStatus?: string;
 }
 
+export interface DhlWebFetchResult {
+  pageUrl: string;
+  dataPath: string;
+  rawData: DhlWebSearchResponse;
+}
+
 export function buildDhlTrackingPageUrl(trackingNumber: string): string {
   return `${DHL_TRACKING_PAGE_BASE}?piececode=${encodeURIComponent(trackingNumber)}`;
 }
 
-function buildDhlDataApiUrl(trackingNumber: string): string {
+function buildTrackingDataUrl(dataPath: string, trackingNumber: string): string {
   const params = new URLSearchParams({
     piececode: trackingNumber,
     noRedirect: 'true',
     language: 'de',
   });
-  return `${DHL_DATA_API_BASE}?${params.toString()}`;
+  return `https://www.dhl.de${dataPath}/search?${params.toString()}`;
 }
 
 function parseDhlGermanDate(raw: string): Date {
@@ -84,7 +90,16 @@ function selectShipment(data: DhlWebSearchResponse): DhlWebSendung | null {
 }
 
 /**
- * Extrahiert den Detaillierten Sendungsverlauf aus der DHL-JSON-Antwort.
+ * Liest den Datenpfad aus dem HTML der DHL-Sendungsverfolgungsseite.
+ * Die Webseite bindet ein React-Widget ein, das seine Daten von dort lädt.
+ */
+export function extractDataPathFromHtml(html: string): string {
+  const match = html.match(/data-nolp-data-path="([^"]+)"/);
+  return match?.[1] ?? DEFAULT_DATA_PATH;
+}
+
+/**
+ * Extrahiert den Detaillierten Sendungsverlauf aus den Webdaten.
  */
 export function extractSendungsverlauf(data: DhlWebSearchResponse): ExtractedDhlSendungsverlauf | null {
   const shipment = selectShipment(data);
@@ -120,10 +135,28 @@ export function extractSendungsverlauf(data: DhlWebSearchResponse): ExtractedDhl
   }
 
   return {
-    text: lines.join('\n'),
+    text: `Detaillierter Sendungsverlauf:\n${lines.join('\n')}`,
     events,
     kurzStatus: verlauf.kurzStatus,
   };
+}
+
+function collectCookies(response: Response, existing: string[]): string[] {
+  const cookies = [...existing];
+  const setCookies = typeof response.headers.getSetCookie === 'function'
+    ? response.headers.getSetCookie()
+    : [];
+
+  for (const cookie of setCookies) {
+    const pair = cookie.split(';')[0]?.trim();
+    if (!pair) continue;
+    const name = pair.split('=')[0];
+    const idx = cookies.findIndex((c) => c.startsWith(`${name}=`));
+    if (idx >= 0) cookies[idx] = pair;
+    else cookies.push(pair);
+  }
+
+  return cookies;
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
@@ -136,35 +169,23 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   }
 }
 
-async function fetchDhlTrackingData(trackingNumber: string): Promise<DhlWebSearchResponse> {
+/**
+ * Ruft die DHL-Sendungsverfolgungswebseite auf und lädt die zugehörigen Tracking-Daten,
+ * die die Seite clientseitig nachlädt.
+ */
+export async function fetchDhlTrackingFromWeb(trackingNumber: string): Promise<DhlWebFetchResult> {
   const pageUrl = buildDhlTrackingPageUrl(trackingNumber);
-  const apiUrl = buildDhlDataApiUrl(trackingNumber);
   const timeoutMs = Number(process.env.TRACKING_PROVIDER_TIMEOUT_MS || 12000);
+  let cookies: string[] = [];
 
+  let pageResponse: Response;
   try {
-    // Referer-Seite laden (Session/Cookies), wie ein normaler Browser-Besuch
-    await fetchWithTimeout(pageUrl, {
+    pageResponse = await fetchWithTimeout(pageUrl, {
       method: 'GET',
       headers: {
         'User-Agent': BROWSER_USER_AGENT,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'de-DE,de;q=0.9',
-      },
-      redirect: 'follow',
-    }, timeoutMs);
-  } catch {
-    // Referer-Aufruf ist best-effort – die Daten-API wird trotzdem versucht
-  }
-
-  let response: Response;
-  try {
-    response = await fetchWithTimeout(apiUrl, {
-      method: 'GET',
-      headers: {
-        'User-Agent': BROWSER_USER_AGENT,
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'de-DE,de;q=0.9',
-        'Referer': pageUrl,
       },
       redirect: 'follow',
     }, timeoutMs);
@@ -177,7 +198,43 @@ async function fetchDhlTrackingData(trackingNumber: string): Promise<DhlWebSearc
     );
   }
 
-  const body = await response.text();
+  cookies = collectCookies(pageResponse, cookies);
+  const pageHtml = await pageResponse.text();
+
+  if (!pageResponse.ok) {
+    throw new TrackingProviderError(
+      'dhl-web',
+      'network',
+      `DHL-Webseite nicht erreichbar: HTTP ${pageResponse.status}`,
+    );
+  }
+
+  const dataPath = extractDataPathFromHtml(pageHtml);
+  const dataUrl = buildTrackingDataUrl(dataPath, trackingNumber);
+
+  let dataResponse: Response;
+  try {
+    dataResponse = await fetchWithTimeout(dataUrl, {
+      method: 'GET',
+      headers: {
+        'User-Agent': BROWSER_USER_AGENT,
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'de-DE,de;q=0.9',
+        'Referer': pageUrl,
+        ...(cookies.length > 0 ? { Cookie: cookies.join('; ') } : {}),
+      },
+      redirect: 'follow',
+    }, timeoutMs);
+  } catch (err: unknown) {
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    throw new TrackingProviderError(
+      'dhl-web',
+      isAbort ? 'timeout' : 'network',
+      `DHL-Tracking-Daten nicht erreichbar: ${String(err)}`,
+    );
+  }
+
+  const body = await dataResponse.text();
 
   if (body.trimStart().startsWith('<!DOCTYPE') || body.trimStart().startsWith('<html')) {
     throw new TrackingProviderError(
@@ -187,18 +244,22 @@ async function fetchDhlTrackingData(trackingNumber: string): Promise<DhlWebSearc
     );
   }
 
-  if (!response.ok) {
+  if (!dataResponse.ok) {
     throw new TrackingProviderError(
       'dhl-web',
-      response.status === 404 ? 'not_found' : 'unknown',
-      `DHL-Datenabfrage fehlgeschlagen: HTTP ${response.status}`,
+      dataResponse.status === 404 ? 'not_found' : 'unknown',
+      `DHL-Tracking-Daten nicht verfügbar: HTTP ${dataResponse.status}`,
     );
   }
 
   try {
-    return JSON.parse(body) as DhlWebSearchResponse;
+    return {
+      pageUrl,
+      dataPath,
+      rawData: JSON.parse(body) as DhlWebSearchResponse,
+    };
   } catch {
-    throw new TrackingProviderError('dhl-web', 'unknown', 'DHL-Antwort ist kein gültiges JSON');
+    throw new TrackingProviderError('dhl-web', 'unknown', 'DHL-Webdaten sind kein gültiges JSON');
   }
 }
 
@@ -215,8 +276,10 @@ function mapEventsToTrackingEvents(
 }
 
 /**
- * DHL-Web-Tracking: Statischer HTTP-Abruf der DHL-Sendungsverfolgung,
- * programmatische Extraktion des Sendungsverlaufs, KI-basierte Statuszuordnung.
+ * DHL-Web-Tracking:
+ * 1. Webseite mit Sendungsnummer abrufen
+ * 2. Sendungsverlauf programmatisch extrahieren
+ * 3. Extrahierte Informationen an ChatGPT senden, um den Status zu ermitteln
  */
 export class DhlWebTrackingProvider implements TrackingProvider {
   readonly providerName = 'dhl-web';
@@ -227,8 +290,8 @@ export class DhlWebTrackingProvider implements TrackingProvider {
   }
 
   async fetchTracking(trackingNumber: string): Promise<TrackingResult> {
-    const data = await fetchDhlTrackingData(trackingNumber);
-    const extracted = extractSendungsverlauf(data);
+    const { rawData } = await fetchDhlTrackingFromWeb(trackingNumber);
+    const extracted = extractSendungsverlauf(rawData);
 
     if (!extracted || (!extracted.text.trim() && extracted.events.length === 0)) {
       throw new TrackingProviderError(
@@ -241,11 +304,11 @@ export class DhlWebTrackingProvider implements TrackingProvider {
     const analysis = await analyzeDhlTrackingStatus(extracted.text);
     const trackingEvents = mapEventsToTrackingEvents(extracted.events, analysis.status);
 
-    const zustelldatum = selectShipment(data)?.sendungsdetails?.zustellung?.zustelldatum;
+    const zustelldatum = selectShipment(rawData)?.sendungsdetails?.zustellung?.zustelldatum;
     const estimatedDelivery = zustelldatum ? parseDhlGermanDate(zustelldatum) : undefined;
 
     if (analysis.reasoning) {
-      console.log(`[DHL Web] Status für ${trackingNumber}: ${analysis.status} – ${analysis.reasoning}`);
+      console.log(`[DHL Web] ChatGPT-Status für ${trackingNumber}: ${analysis.status} – ${analysis.reasoning}`);
     }
 
     return {
