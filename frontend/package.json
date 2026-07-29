@@ -11,7 +11,7 @@
   "dependencies": {
     "@stripe/react-stripe-js": "^3.1.0",
     "@stripe/stripe-js": "^5.3.0",
-    "axios": "^1.7.9",
+    "axios": "^1.18.1",
     "date-fns": "^4.1.0",
     "dompurify": "^3.4.1",
     "lucide-react": "^0.469.0",
