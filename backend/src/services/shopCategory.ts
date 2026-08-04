@@ -41,7 +41,7 @@ export async function resolveOrderCategory(
   return gptCategory ?? null;
 }
 
-/** Speichert Anbieter-Regel und setzt Kategorie bei allen nicht-manuellen Bestellungen desselben Shops. */
+/** Speichert Anbieter-Regel und setzt Kategorie nur bei Bestellungen ohne Kategorie desselben Shops. */
 export async function applyShopCategoryAssignment(
   userId: string,
   shop: string,
@@ -74,6 +74,7 @@ export async function applyShopCategoryAssignment(
       userId,
       id: { not: excludeOrderId },
       categoryManual: false,
+      category: null,
     },
     select: { id: true, shop: true },
   });
