@@ -1,4 +1,16 @@
-import { format, startOfMonth, endOfMonth, startOfYear, endOfYear, parseISO, isValid, addMonths } from 'date-fns';
+import {
+  format,
+  startOfMonth,
+  endOfMonth,
+  startOfYear,
+  endOfYear,
+  startOfDay,
+  endOfDay,
+  subDays,
+  parseISO,
+  isValid,
+  addMonths,
+} from 'date-fns';
 import { de } from 'date-fns/locale';
 import type { Order } from '../api/orders';
 import { categoryLabel, ORDER_CATEGORIES } from '../constants/orderCategories';
@@ -192,11 +204,45 @@ export function aggregateMetricTotal(orders: Order[], metric: AnalyticsMetric): 
   return sumOrders(orders);
 }
 
-/** Monatsdurchschnitt über alle Balken (z. B. 12 Monate eines Jahres). */
-export function yearlyMonthlyAverage(bars: ChartBar[]): number {
-  if (bars.length === 0) return 0;
-  const total = bars.reduce((sum, b) => sum + b.value, 0);
-  return total / bars.length;
+export const ROLLING_AVERAGE_DAYS = 365;
+const ROLLING_AVERAGE_MONTHS = 12;
+
+/** Zeitraum der letzten 365 Tage (heute inklusive). */
+export function rolling365DayRange(asOf: Date = new Date()): { start: Date; end: Date } {
+  return {
+    start: startOfDay(subDays(asOf, ROLLING_AVERAGE_DAYS - 1)),
+    end: endOfDay(asOf),
+  };
+}
+
+/** Monatsdurchschnitt über die letzten 365 Tage (Summe / 12). */
+export function rolling365DayMonthlyAverage(
+  orders: Order[],
+  metric: AnalyticsMetric,
+  asOf: Date = new Date(),
+): number {
+  const { start, end } = rolling365DayRange(asOf);
+  const total = aggregateMetricTotal(ordersInRange(orders, start, end, metric), metric);
+  return total / ROLLING_AVERAGE_MONTHS;
+}
+
+/** Monatsdurchschnitt je Kategorie über die letzten 365 Tage (Summe / 12). */
+export function rolling365DayMonthlyAverageByCategory(
+  orders: Order[],
+  metric: AnalyticsMetric,
+  asOf: Date = new Date(),
+): Map<string, number> {
+  const { start, end } = rolling365DayRange(asOf);
+  const totals = new Map<string, number>();
+  for (const o of ordersInRange(orders, start, end, metric)) {
+    const key = categoryKey(o);
+    totals.set(key, (totals.get(key) ?? 0) + orderContribution(o, metric));
+  }
+  const averages = new Map<string, number>();
+  for (const [key, total] of totals) {
+    averages.set(key, total / ROLLING_AVERAGE_MONTHS);
+  }
+  return averages;
 }
 
 /** Gesamtausgaben / Bestellanzahl pro Monat; immer alle 12 Monate des Jahres. */

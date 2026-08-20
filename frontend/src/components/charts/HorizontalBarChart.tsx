@@ -12,16 +12,16 @@ interface Props {
   onBarClick?: (item: ChartBar) => void;
   selectedKey?: string | null;
   emptyMessage?: string;
-  /** Vertikale Monatsdurchschnittslinie je Kategorie (Jahreswert ÷ 12). */
+  /** Vertikale Monatsdurchschnittslinie je Kategorie (365-Tage-Durchschnitt). */
   showAverageLine?: boolean;
+  /** Monatsdurchschnitt je Kategorie (365 Tage), key = categoryId. */
+  averageByKey?: Map<string, number>;
 }
 
 const ROW_H = 36;
 const LABEL_W = 132;
 const VALUE_COL_W = 64;
 const PAD = 8;
-
-const MONTHS_PER_YEAR = 12;
 
 export default function HorizontalBarChart({
   items,
@@ -30,6 +30,7 @@ export default function HorizontalBarChart({
   selectedKey,
   emptyMessage = 'Keine Daten',
   showAverageLine = false,
+  averageByKey,
 }: Props) {
   if (items.length === 0) {
     return (
@@ -63,7 +64,7 @@ export default function HorizontalBarChart({
         const blueClass = selected ? 'fill-blue-600' : 'fill-blue-400';
         const grayClass = selected ? 'fill-gray-400' : 'fill-gray-300';
         const clickHandler = () => onBarClick?.(item);
-        const monthlyAvg = item.value / MONTHS_PER_YEAR;
+        const monthlyAvg = averageByKey?.get(item.key) ?? 0;
         const avgLineX = LABEL_W + (monthlyAvg / max) * chartW;
         const showRowAvg = showAverageLine && monthlyAvg > 0;
 
