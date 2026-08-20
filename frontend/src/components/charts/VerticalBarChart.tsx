@@ -5,7 +5,7 @@ import {
   monthLabel,
   type AnalyticsMetric,
 } from '../../lib/expenseStats';
-import { yearlyMonthlyAverage, type ChartBar } from '../../lib/expenseStats';
+import type { ChartBar } from '../../lib/expenseStats';
 
 interface Props {
   items: ChartBar[];
@@ -14,10 +14,12 @@ interface Props {
   selectedKey?: string | null;
   height?: number;
   emptyMessage?: string;
-  /** Horizontale Jahres-Durchschnittslinie (Summe / Anzahl Monate). */
+  /** Horizontale Monats-Durchschnittslinie (365-Tage-Durchschnitt). */
   showAverageLine?: boolean;
   /** Ø-Wert rechts an der Linie (Standard: an). */
   showAverageLabel?: boolean;
+  /** Monatsdurchschnitt der letzten 365 Tage; erforderlich bei showAverageLine. */
+  averageValue?: number;
 }
 
 /** Wert-Label immer oberhalb des Balkens (schwarz). */
@@ -56,6 +58,7 @@ export default function VerticalBarChart({
   emptyMessage = 'Keine Daten',
   showAverageLine = false,
   showAverageLabel = true,
+  averageValue: averageValueProp,
 }: Props) {
   const plotRef = useRef<HTMLDivElement>(null);
   const [plotWidth, setPlotWidth] = useState(0);
@@ -82,7 +85,7 @@ export default function VerticalBarChart({
   }
 
   const max = Math.max(...items.map((i) => i.value), 1);
-  const averageValue = showAverageLine ? yearlyMonthlyAverage(items) : 0;
+  const averageValue = showAverageLine ? (averageValueProp ?? 0) : 0;
   const showAvg = showAverageLine && averageValue > 0;
   const width = plotWidth || 320;
   const layout = layoutBars(width, items.length, height);

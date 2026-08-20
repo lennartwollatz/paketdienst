@@ -27,6 +27,8 @@ import {
   yearPickerOptions,
   monthPickerOptions,
   monthRangeFromKey,
+  rolling365DayMonthlyAverage,
+  rolling365DayMonthlyAverageByCategory,
   type AnalyticsMetric,
   type ChartBar,
 } from '../lib/expenseStats';
@@ -99,6 +101,14 @@ export default function Analytics() {
   const yearCategoryBars = useMemo(
     () => aggregateByCategory(orders, chartYearRange.start, chartYearRange.end, metric),
     [orders, chartYearRange.start, chartYearRange.end, metric],
+  );
+  const rollingMonthlyAverage = useMemo(
+    () => rolling365DayMonthlyAverage(orders, metric),
+    [orders, metric],
+  );
+  const rollingCategoryMonthlyAverages = useMemo(
+    () => rolling365DayMonthlyAverageByCategory(orders, metric),
+    [orders, metric],
   );
 
   const categoriesWithData = useMemo(() => {
@@ -194,6 +204,7 @@ export default function Analytics() {
                 items={monthlyBars}
                 metric={metric}
                 showAverageLine
+                averageValue={rollingMonthlyAverage}
                 onBarClick={handleMonthBar}
                 height={220}
               />
@@ -217,6 +228,7 @@ export default function Analytics() {
                 items={yearCategoryBars}
                 metric={metric}
                 showAverageLine
+                averageByKey={rollingCategoryMonthlyAverages}
                 onBarClick={handleYearCategoryBar}
               />
             </section>
