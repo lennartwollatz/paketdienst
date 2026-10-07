@@ -13,6 +13,7 @@
     "db:seed": "tsx src/seed.ts",
     "db:reset": "tsx src/resetDatabase.ts",
     "db:inspect": "tsx src/dbInspect.ts",
+    "db:purge-users": "tsx src/purgeUsers.ts",
     "db:studio": "prisma studio"
   },
   "dependencies": {

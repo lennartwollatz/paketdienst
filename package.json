@@ -21,6 +21,7 @@
     "db:deploy": "npm run db:deploy --prefix backend",
     "db:seed": "npm run db:seed --prefix backend",
     "db:reset": "npm run db:reset --prefix backend",
-    "db:inspect": "npm run db:inspect --prefix backend"
+    "db:inspect": "npm run db:inspect --prefix backend",
+    "db:purge-users": "npm run db:purge-users --prefix backend"
   }
 }
