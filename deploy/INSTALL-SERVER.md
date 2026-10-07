@@ -56,6 +56,16 @@ nano frontend/.env
 
 Mindestens **`JWT_SECRET`**, **`VITE_STRIPE_PUBLISHABLE_KEY`** / Stripe im Backend; Rest nach Bedarf (OpenAI, SMTP, TrackingMore, VAPID).
 
+**Datenbank:** Beim ersten Deploy legt `npm run build` die Tabellen per **`prisma migrate deploy`** an (`backend/prisma/migrations/`).  
+Fehler **`P2021` / table Order does not exist** → Migrationen fehlen oder `.env` zeigt auf leere DB:
+
+```bash
+cd /var/www/paketdienst
+grep DATABASE_URL backend/.env
+npm run db:deploy --prefix backend
+sudo systemctl restart paketdienst-api
+```
+
 Alternative für lokale Entwicklung statt Produktion:
 
 ```bash
