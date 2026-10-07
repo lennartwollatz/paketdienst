@@ -13,12 +13,16 @@ Steuerung über **`deploy/production.json`** (Pfade, Ports, Unit-Namen).
 
 ## Ein Weg: systemd neu einrichten
 
-### 0. Variablen (nur zur Orientierung — im Repo bereits gesetzt)
+### 0. Variablen (zentral im Repo)
+
+Datei **`deploy/server.defaults.sh`** (überall gleich):
 
 ```bash
 APP=/var/www/paketdienst
 USER=smarthome
 ```
+
+In Anleitungen und Skripten: `source deploy/server.defaults.sh`, dann `$APP` und `$USER` verwenden.
 
 ### 1. Einmalig: Env-Dateien kopieren
 
@@ -80,6 +84,9 @@ sudo systemctl stop paketdienst-api paketdienst-web 2>/dev/null || true
 
 ### 4. Service-Dateien installieren
 
+**Ausführliche Anleitung nur für systemd:** **`deploy/SYSTEMD-NEU-EINRICHTEN.md`**  
+**Skript:** `DEPLOY_SUDO=1 ./deploy/install-systemd.sh`
+
 Die Vorlagen liegen im Repo unter `deploy/`:
 
 | Datei im Repo | Auf dem Server |
@@ -92,16 +99,19 @@ Einmalig (oder ab jetzt automatisch über `npm run build`):
 
 ```bash
 cd /var/www/paketdienst
+source deploy/server.defaults.sh
+
 sudo cp deploy/paketdienst-api.service /etc/systemd/system/
 sudo cp deploy/paketdienst-web.service /etc/systemd/system/
 sudo cp deploy/paketdienst.target /etc/systemd/system/
-sudo sed -i "s|WorkingDirectory=.*|WorkingDirectory=/var/www/paketdienst/backend|" /etc/systemd/system/paketdienst-api.service
-sudo sed -i "s|WorkingDirectory=.*|WorkingDirectory=/var/www/paketdienst|" /etc/systemd/system/paketdienst-web.service
-sudo sed -i "s|Environment=FRONTEND_DIST=.*|Environment=FRONTEND_DIST=/var/www/paketdienst/frontend/dist|" /etc/systemd/system/paketdienst-web.service
-sudo sed -i "s|^User=.*|User=smarthome|" /etc/systemd/system/paketdienst-api.service
-sudo sed -i "s|^Group=.*|Group=smarthome|" /etc/systemd/system/paketdienst-api.service
-sudo sed -i "s|^User=.*|User=smarthome|" /etc/systemd/system/paketdienst-web.service
-sudo sed -i "s|^Group=.*|Group=smarthome|" /etc/systemd/system/paketdienst-web.service
+sudo sed -i "s|WorkingDirectory=.*|WorkingDirectory=$APP/backend|" /etc/systemd/system/paketdienst-api.service
+sudo sed -i "s|WorkingDirectory=.*|WorkingDirectory=$APP|" /etc/systemd/system/paketdienst-web.service
+sudo sed -i "s|Environment=FRONTEND_DIST=.*|Environment=FRONTEND_DIST=$APP/frontend/dist|" /etc/systemd/system/paketdienst-web.service
+sudo sed -i "s|^EnvironmentFile=.*|EnvironmentFile=-$APP/backend/.env|" /etc/systemd/system/paketdienst-api.service
+sudo sed -i "s|^User=.*|User=$USER|" /etc/systemd/system/paketdienst-api.service
+sudo sed -i "s|^Group=.*|Group=$USER|" /etc/systemd/system/paketdienst-api.service
+sudo sed -i "s|^User=.*|User=$USER|" /etc/systemd/system/paketdienst-web.service
+sudo sed -i "s|^Group=.*|Group=$USER|" /etc/systemd/system/paketdienst-web.service
 ```
 
 **Inhalt der Units (Referenz):**
@@ -259,6 +269,10 @@ npm run build
 ```bash
 SKIP_GIT_PULL=1 SKIP_SYSTEMD=1 npm run build:compile
 ```
+
+**Wichtig:** Deploy immer vom **Repo-Root** `/var/www/paketdienst` starten — nicht aus `backend/`.
+Dort würde nur `tsc` laufen, **ohne** `npm ci` und ohne systemd-Skript.
+Nach `git pull` fehlen dann neue Pakete (z. B. `@aftership/tracking-sdk`) → Build-Fehler TS2307.
 
 ---
 

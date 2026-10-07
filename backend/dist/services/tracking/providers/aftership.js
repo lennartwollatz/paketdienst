@@ -188,8 +188,10 @@ function isNotFoundError(err) {
         || err.code === tracking_sdk_1.AfterShipErrorCodes.NOT_FOUND;
 }
 function isAlreadyExistsError(err) {
-    return err instanceof tracking_sdk_1.AftershipError
-        && err.code === tracking_sdk_1.AfterShipErrorCodes.TRACKING_ALREADY_EXIST;
+    if (!(err instanceof tracking_sdk_1.AftershipError)) {
+        return false;
+    }
+    return err.code === tracking_sdk_1.AfterShipErrorCodes.TRACKING_ALREADY_EXIST;
 }
 async function detectCourierSlug(sdk, trackingNumber) {
     const payload = { tracking_number: trackingNumber };

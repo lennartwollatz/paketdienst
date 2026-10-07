@@ -41,7 +41,10 @@ function loadConfig() {
   if (!fs.existsSync(configPath)) {
     die('deploy/production.json fehlt');
   }
-  return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  cfg.appDir = cfg.appDir || cfg.app || '/var/www/paketdienst';
+  cfg.user = cfg.user || 'smarthome';
+  return cfg;
 }
 
 function resolveDbPath(backendEnvPath, backendDir) {

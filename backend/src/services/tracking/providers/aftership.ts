@@ -201,8 +201,10 @@ function isNotFoundError(err: AftershipError): boolean {
 }
 
 function isAlreadyExistsError(err: unknown): boolean {
-  return err instanceof AftershipError
-    && err.code === AfterShipErrorCodes.TRACKING_ALREADY_EXIST;
+  if (!(err instanceof AftershipError)) {
+    return false;
+  }
+  return err.code === AfterShipErrorCodes.TRACKING_ALREADY_EXIST;
 }
 
 async function detectCourierSlug(

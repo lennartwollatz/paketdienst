@@ -48,7 +48,7 @@ Ab dem Repository-Root (`paketdienst/`):
 npm run dev
 ```
 
-**Produktion (Server unter `/var/www/paketdienst`):** siehe **`deploy/INSTALL-SERVER.md`**
+**Produktion (Server):** `APP=/var/www/paketdienst`, User **`smarthome`** — siehe **`deploy/INSTALL-SERVER.md`**
 
 ```bash
 cd /var/www/paketdienst

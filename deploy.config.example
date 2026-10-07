@@ -2,16 +2,16 @@
 #   cp deploy.config.example deploy.config
 #
 # deploy.config wird nicht ins Git eingecheckt (server-spezifische Pfade).
+# Standard wie deploy/server.defaults.sh und deploy/production.json
 
-# Absoluter Pfad zum Git-Repository auf dem Server
-REPO_DIR="/var/www/paketdienst"
+APP="/var/www/paketdienst"
+RUN_USER="smarthome"
 
-# Zielordner für das gebaute Frontend (Nginx root/alias für /paketdienst/)
-FRONTEND_DEPLOY_DIR="/var/www/paketdienst"
+REPO_DIR="$APP"
+FRONTEND_DEPLOY_DIR="$APP"
 
-# Backend neu starten: systemd | pm2 | none
 BACKEND_RESTART_MODE="systemd"
-BACKEND_SERVICE_NAME="paketdienst-backend"
+BACKEND_SERVICE_NAME="paketdienst-api"
 PM2_APP_NAME="paketdienst"
 
 # Git-Branch, der deployed werden soll

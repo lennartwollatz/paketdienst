@@ -1,4 +1,5 @@
 {
+  "app": "/var/www/paketdienst",
   "appDir": "/var/www/paketdienst",
   "user": "smarthome",
   "gitBranch": "main",

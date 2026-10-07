@@ -27,7 +27,7 @@ Pflicht (sinngemäß anpassen):
 3. Backend neu bauen und starten (vom Repo-Root):
 
    ```bash
-   cd pfad/zum/paketdienst
+   cd /var/www/paketdienst
    npm ci --prefix backend
    npm run build:backend
    ```
@@ -59,7 +59,7 @@ Variablen mit **`VITE_`** werden **beim Build** in den Code geschrieben. Ohne Ne
 3. Frontend bauen und ausliefern (vom Repo-Root):
 
    ```bash
-   cd pfad/zum/paketdienst
+   cd /var/www/paketdienst
    npm ci --prefix frontend
    npm run build:frontend
    ```
@@ -82,10 +82,9 @@ sudo nginx -T 2>/dev/null | grep -E 'root |alias |paketdienst'
 
 Such den `location`-Block für `/paketdienst`. Entweder:
 
-- **`alias /var/www/beispiel/;`** → dort muss **`index.html`** aus `dist/` liegen, Struktur exakt zur `alias`-Dokumentation,  
+- **`alias /var/www/paketdienst/;`** → statische Dateien aus `frontend/dist` (oder Proxy auf Port 3002, siehe `deploy/nginx-paketdienst.conf`),  
   oder
-- **`root /var/www/html;`** unter `location /paketdienst/` → Dateien oft unter **`/var/www/html/paketdienst/`**,
-  oder **`alias /var/www/paketdienst/;`** wenn der Deploy-Zielordner direkt unter **`/var/www/paketdienst`** liegt.
+- **`root /var/www/html;`** unter `location /paketdienst/` → Dateien unter **`/var/www/html/paketdienst/`** (nur wenn so konfiguriert).
 
 Nach dem Kopieren oft **kein** `nginx reload` nötig, nur wenn sich die Konfig ändert.
 
