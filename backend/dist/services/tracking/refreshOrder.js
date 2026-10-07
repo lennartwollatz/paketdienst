@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ACTIVE_TRACKING_STATUSES = void 0;
 exports.statusLabel = statusLabel;
 exports.refreshOrderTracking = refreshOrderTracking;
+exports.scheduleOrderTrackingRefresh = scheduleOrderTrackingRefresh;
 const client_1 = require("@prisma/client");
 const tracking_1 = require("../tracking");
 const normalization_1 = require("./normalization");
@@ -61,7 +62,7 @@ async function refreshOrderTracking(orderId, options = {}) {
     const order = await prisma.order.findUnique({ where: { id: orderId } });
     if (!order?.trackingNumber)
         return false;
-    const result = await (0, tracking_1.getTrackingInfo)(order.trackingNumber);
+    const result = await (0, tracking_1.getTrackingInfo)(order.trackingNumber, order.carrier ?? undefined);
     const uniqueEvents = (0, normalization_1.dedupeEvents)(result.events);
     const previousStatus = order.status;
     await prisma.$transaction(async (tx) => {
@@ -96,5 +97,11 @@ async function refreshOrderTracking(orderId, options = {}) {
         });
     }
     return true;
+}
+/** Tracking im Hintergrund starten (Fehler werden geloggt, Sync blockiert nicht). */
+function scheduleOrderTrackingRefresh(orderId, options = {}) {
+    void refreshOrderTracking(orderId, { sendPush: options.sendPush ?? false }).catch((err) => {
+        console.warn(`[tracking] Tracking-Refresh für Bestellung ${orderId} fehlgeschlagen:`, err instanceof Error ? err.message : err);
+    });
 }
 //# sourceMappingURL=refreshOrder.js.map

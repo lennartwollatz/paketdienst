@@ -17,7 +17,7 @@ exports.SYNC_PHASE_LABELS = {
 };
 function phaseRatio(current, total) {
     if (total <= 0)
-        return 1;
+        return 0;
     return Math.min(1, Math.max(0, current / total));
 }
 function calcSyncPercent(phases) {

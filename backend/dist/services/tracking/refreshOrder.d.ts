@@ -9,4 +9,8 @@ export declare function statusLabel(status: string): string;
 export declare function refreshOrderTracking(orderId: string, options?: {
     sendPush?: boolean;
 }): Promise<boolean>;
+/** Tracking im Hintergrund starten (Fehler werden geloggt, Sync blockiert nicht). */
+export declare function scheduleOrderTrackingRefresh(orderId: string, options?: {
+    sendPush?: boolean;
+}): void;
 //# sourceMappingURL=refreshOrder.d.ts.map

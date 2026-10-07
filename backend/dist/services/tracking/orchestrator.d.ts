@@ -1,4 +1,9 @@
 import { TrackingResult } from './types';
-export declare function fetchTrackingFromProvider(trackingNumber: string, _carrier?: string): Promise<TrackingResult>;
+/**
+ * Sendungsverfolgung:
+ * - DHL: Webseiten-Abruf (dhl.de) + KI-Statusanalyse, optional TrackingMore als Fallback
+ * - Andere Carrier: TrackingMore
+ */
+export declare function fetchTrackingFromProvider(trackingNumber: string, carrier?: string): Promise<TrackingResult>;
 export declare function isLegacyFallbackEnabled(): boolean;
 //# sourceMappingURL=orchestrator.d.ts.map

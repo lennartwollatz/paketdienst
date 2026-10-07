@@ -31,13 +31,39 @@ self.addEventListener('push', (event) => {
   event.waitUntil(self.registration.showNotification(payload.title, options));
 });
 
+/**
+ * Push-Payloads liefern App-Pfade wie `/orders/:id`. Mit führendem Slash würde
+ * `new URL('/orders/…', scope)` den SPA-Unterpfad (z. B. /paketdienst) verlieren.
+ */
+function resolveNotificationUrl(targetPath, scope) {
+  const scopeUrl = new URL(scope);
+
+  if (!targetPath || targetPath === '/') {
+    return scopeUrl.href;
+  }
+
+  if (/^https?:\/\//i.test(targetPath)) {
+    return targetPath;
+  }
+
+  const scopePath = scopeUrl.pathname.replace(/\/+$/, '');
+  const path = targetPath.startsWith('/') ? targetPath : `/${targetPath}`;
+
+  if (scopePath && (path === scopePath || path.startsWith(`${scopePath}/`))) {
+    return `${scopeUrl.origin}${path}`;
+  }
+
+  const relative = path.startsWith('/') ? path.slice(1) : path;
+  return new URL(relative, scope).href;
+}
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const targetPath = event.notification.data?.url || '/';
 
   event.waitUntil((async () => {
     const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    const targetUrl = new URL(targetPath, self.registration.scope).href;
+    const targetUrl = resolveNotificationUrl(targetPath, self.registration.scope);
 
     for (const client of allClients) {
       if ('focus' in client) {

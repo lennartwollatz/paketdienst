@@ -38,6 +38,7 @@ exports.analyzeEmailForOrder = analyzeEmailForOrder;
 exports.analyzeEmailsBatch = analyzeEmailsBatch;
 const openai_1 = __importStar(require("openai"));
 const orderCategories_1 = require("../constants/orderCategories");
+const orderCategoryInference_1 = require("./orderCategoryInference");
 function getOpenAI() {
     const key = process.env.OPENAI_API_KEY;
     if (!key || key === 'sk-PLACEHOLDER')
@@ -144,7 +145,7 @@ Extrahiere folgende Informationen:
 9. "deliveryAddress": Lieferadresse als einzeiliger String (Straße, PLZ Ort) – oder null wenn nicht angegeben.
 10. "currency": "EUR", "USD" oder "GBP".
 11. "orderDate": Bestelldatum im ISO-Format (YYYY-MM-DD) oder null.
-12. "category": Kategorie des Kaufs – genau eine ID aus dieser Liste (sonst null):
+12. "category": Kategorie des Kaufs – **Pflichtfeld für jede erkannte Bestellung**, sofern aus E-Mail oder Anhang erkennbar. Genau eine ID aus dieser Liste; nur null, wenn wirklich keine Zuordnung möglich ist (z. B. reine Versandbenachrichtigung ohne Produktbezug):
     klamotten, software_technik, kosmetik, essen, transport_logistik, freizeit_sport, auto, finanzen, gesundheit, haus_wohnen, urlaub
     – klamotten: Mode, Schuhe, Textilien
     – software_technik: Software, Apps, Hardware, Elektronik
@@ -242,6 +243,12 @@ JSON-Schema (gleiche Felder wie bei E-Mail-Analyse, isOrder immer true):
 function isPresentString(v) {
     return typeof v === 'string' && v.trim().length > 0;
 }
+function ensureOrderCategory(email, info) {
+    if (!info.isOrder || info.category)
+        return info;
+    const inferred = (0, orderCategoryInference_1.inferOrderCategory)(info.shop, email.subject, email.text);
+    return inferred ? { ...info, category: inferred } : info;
+}
 /** Fehlen nach E-Mail-Analyse noch wichtige Bestelldaten? */
 function needsPdfSupplement(info) {
     if (!info.isOrder)
@@ -249,7 +256,8 @@ function needsPdfSupplement(info) {
     const shopMissing = !isPresentString(info.shop);
     const priceMissing = info.price == null || Number.isNaN(info.price);
     const addressMissing = !isPresentString(info.deliveryAddress);
-    return shopMissing || priceMissing || addressMissing;
+    const categoryMissing = !info.category;
+    return shopMissing || priceMissing || addressMissing || categoryMissing;
 }
 function listMissingFields(info) {
     const missing = [];
@@ -259,6 +267,8 @@ function listMissingFields(info) {
         missing.push('price (Gesamtbetrag)');
     if (!isPresentString(info.deliveryAddress))
         missing.push('deliveryAddress (Lieferadresse)');
+    if (!info.category)
+        missing.push('category (Kategorie des Kaufs)');
     return missing;
 }
 /** Ergänzt fehlende Felder aus PDF-Daten, ohne vorhandene Werte zu überschreiben */
@@ -389,15 +399,16 @@ async function analyzeEmailForOrder(email) {
             const text = response.choices[0]?.message?.content?.trim();
             if (text) {
                 const parsed = parseOrderInfoJson(text);
-                if (parsed)
-                    return enrichOrderInfoFromPdfs(email, parsed);
+                if (parsed) {
+                    return enrichOrderInfoFromPdfs(email, ensureOrderCategory(email, parsed));
+                }
             }
         }
         catch (err) {
             console.error('OpenAI-Fehler, verwende Fallback:', err);
         }
     }
-    return enrichOrderInfoFromPdfs(email, fallbackAnalysis(email));
+    return enrichOrderInfoFromPdfs(email, ensureOrderCategory(email, fallbackAnalysis(email)));
 }
 // ─── Batch-Analyse (Vollsync, ≥ BATCH_THRESHOLD E-Mails) ─────────────────────
 /** Ab dieser Anzahl E-Mails wird die Batch API genutzt (50 % Rabatt) */
@@ -514,7 +525,9 @@ async function analyzeEmailsBatch(emails, onProgress) {
                 if (content) {
                     const parsed = parseOrderInfoJson(content);
                     if (parsed) {
-                        results.set(originalUid, parsed);
+                        const email = emailsToProcess.find(e => e.uid === originalUid);
+                        const withCategory = email ? ensureOrderCategory(email, parsed) : parsed;
+                        results.set(originalUid, withCategory);
                     }
                     else {
                         parseErrors++;

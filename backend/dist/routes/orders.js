@@ -411,6 +411,14 @@ router.patch('/:id', auth_1.requireAuth, auth_1.requirePayment, async (req, res)
             carrier: updateData.carrier ?? order.carrier,
         });
     }
+    const trackingChanged = 'trackingNumber' in req.body
+        && updateData.trackingNumber !== order.trackingNumber;
+    const newTrackingNumber = trackingChanged
+        ? updateData.trackingNumber
+        : null;
+    if (newTrackingNumber && newStatus !== 'delivered') {
+        (0, refreshOrder_1.scheduleOrderTrackingRefresh)(orderId);
+    }
     return res.json({ ...updated, categoriesPropagated });
 });
 // DELETE /api/orders/:id

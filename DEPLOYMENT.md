@@ -24,12 +24,12 @@ Pflicht (sinngemäß anpassen):
 
 2. **`PORT`**, **`DATABASE_URL`**, **`JWT_SECRET`**, ggf. Stripe/SMTP/Tracking wie gehabt setzen.
 
-3. Backend neu bauen und starten:
+3. Backend neu bauen und starten (vom Repo-Root):
 
    ```bash
-   cd pfad/zum/backend
-   npm ci
-   npm run build
+   cd pfad/zum/paketdienst
+   npm ci --prefix backend
+   npm run build:backend
    ```
 
 4. Den laufenden Dienst neu starten, z. B.:
@@ -56,13 +56,17 @@ Variablen mit **`VITE_`** werden **beim Build** in den Code geschrieben. Ohne Ne
    - **Setzen**, wenn die API unter einer **festen anderen** URL liegt, z. B. wenn sie nur unter **`https://host/api`** liegt:  
      `VITE_API_URL=https://wollatzsmarthome.ddns.net/api`
 
-3. Frontend bauen und ausliefern:
+3. Frontend bauen und ausliefern (vom Repo-Root):
 
    ```bash
-   cd pfad/zum/frontend
-   npm ci
-   npm run build
+   cd pfad/zum/paketdienst
+   npm ci --prefix frontend
+   npm run build:frontend
    ```
+
+   Beides kompilieren ohne Neustart: `npm run build:compile` (nach `npm run ci:all`).
+
+   **`npm run build`** im Root installiert Abhängigkeiten, baut alles und **startet das Backend** — auf dem Server besser `./deploy.sh` oder `build:compile` + systemd/pm2 nutzen.
 
 4. **`dist/`** auf den Server kopieren (siehe Schritt 5).
 

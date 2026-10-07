@@ -279,16 +279,34 @@ function envelopeMetaMessage(env) {
     const e = env;
     return e.meta?.message ?? e.message;
 }
+/** TrackingMore-Fehlercodes für erschöpptes Guthaben/Kontingent (kein abgelaufener API-Key). */
+const TM_QUOTA_CODES = new Set([4019, 4021, 4190, 429]);
+function tmUserMessage(code, fallback) {
+    switch (code) {
+        case 4019:
+        case 4021:
+            return 'TrackingMore-Guthaben aufgebraucht – bitte in deinem TrackingMore-Konto aufladen.';
+        case 4190:
+            return 'TrackingMore-Kontingent erschöpft – Plan upgraden oder Guthaben aufladen.';
+        case 429:
+            return 'TrackingMore Rate-Limit erreicht – bitte kurz warten und erneut versuchen.';
+        case 401:
+        case 403:
+            return 'TrackingMore hat die Anfrage abgelehnt. API-Key und Berechtigungen im TrackingMore-Dashboard prüfen.';
+        default:
+            return fallback ?? `TrackingMore-Fehler (Code ${code ?? 'unbekannt'})`;
+    }
+}
 function throwIfTmError(envelope, context) {
     const code = envelopeMetaCode(envelope);
     if (code === undefined || code === 200 || code === 4101)
         return;
-    const msg = envelopeMetaMessage(envelope) ?? `TrackingMore ${context} (Code ${code})`;
+    const msg = tmUserMessage(code, envelopeMetaMessage(envelope) ?? `TrackingMore ${context} (Code ${code})`);
+    if (TM_QUOTA_CODES.has(code)) {
+        throw new types_1.TrackingProviderError('trackingmore', 'rate_limit', msg, true);
+    }
     if (code === 401 || code === 403) {
         throw new types_1.TrackingProviderError('trackingmore', 'auth', msg);
-    }
-    if (code === 4190 || code === 429) {
-        throw new types_1.TrackingProviderError('trackingmore', 'rate_limit', msg, true);
     }
 }
 /** v4: Checkpoints oft unter origin_info.trackinfo / destination_info.trackinfo */
@@ -363,9 +381,13 @@ async function getTrackingData(trackingNumber, courierCode) {
         parsedBody = { _raw: body };
     }
     tmLogResponse('/v4/trackings/get', response.status, parsedBody);
+    const metaCode = envelopeMetaCode(parsedBody);
+    if (metaCode !== undefined && TM_QUOTA_CODES.has(metaCode)) {
+        throw new types_1.TrackingProviderError('trackingmore', 'rate_limit', tmUserMessage(metaCode), true);
+    }
     if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
-            throw new types_1.TrackingProviderError('trackingmore', 'auth', `TrackingMore API Key ungültig (HTTP ${response.status})`);
+            throw new types_1.TrackingProviderError('trackingmore', 'auth', tmUserMessage(metaCode ?? response.status, `TrackingMore GET abgelehnt (HTTP ${response.status})`));
         }
         if (response.status === 429) {
             throw new types_1.TrackingProviderError('trackingmore', 'rate_limit', 'TrackingMore Rate-Limit erreicht', true);
@@ -373,6 +395,113 @@ async function getTrackingData(trackingNumber, courierCode) {
         throw new types_1.TrackingProviderError('trackingmore', 'unknown', `TrackingMore GET Fehler ${response.status}: ${body.slice(0, 300)}`);
     }
     return parsedBody;
+}
+/** v2 Realtime – liefert Status ohne vorherige Registrierung (separates Kontingent). */
+async function fetchRealtimeV2(trackingNumber, courierCode) {
+    const url = 'https://api.trackingmore.com/v2/trackings/realtime';
+    const payload = { tracking_number: trackingNumber, carrier_code: courierCode };
+    const timeoutMs = Number(process.env.TRACKING_PROVIDER_TIMEOUT_MS || 12000);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    tmLogRequest('POST', url, payload);
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Tracking-Api-Key': process.env.TRACKINGMORE_API_KEY,
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+            },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+        });
+        clearTimeout(timer);
+        const body = await response.text().catch(() => '');
+        let parsed = {};
+        try {
+            parsed = body ? JSON.parse(body) : {};
+        }
+        catch {
+            parsed = { _raw: body };
+        }
+        tmLogResponse('/v2/trackings/realtime', response.status, parsed);
+        const code = envelopeMetaCode(parsed);
+        if (code !== undefined && code !== 200) {
+            if (TM_QUOTA_CODES.has(code)) {
+                throw new types_1.TrackingProviderError('trackingmore', 'rate_limit', tmUserMessage(code), true);
+            }
+            return null;
+        }
+        const data = parsed.data;
+        if (data?.items?.length) {
+            return { meta: { code: 200 }, data: data.items };
+        }
+        return null;
+    }
+    catch (err) {
+        clearTimeout(timer);
+        if (err instanceof types_1.TrackingProviderError)
+            throw err;
+        console.warn('[TrackingMore] v2/realtime fehlgeschlagen:', err);
+        return null;
+    }
+}
+function buildTrackingResult(tracking, trackingNumber, courierCode, detected) {
+    const deliveryStatusRaw = tracking.delivery_status
+        || tracking.status
+        || '';
+    let internalStatus = mapStatus(tracking.substatus ?? deliveryStatusRaw);
+    const latestEvent = tracking.latest_event ?? '';
+    if ((0, normalization_1.detectPackstationFromDescription)(latestEvent))
+        internalStatus = 'in_packstation';
+    const checkpointRows = collectCheckpoints(tracking);
+    let rawEvents = checkpointRows.flatMap((cp) => {
+        if (!cp.checkpoint_time)
+            return [];
+        const ts = new Date(cp.checkpoint_time);
+        if (isNaN(ts.getTime()))
+            return [];
+        const desc = cp.message || 'Status-Update';
+        let evInternal = mapStatus(cp.substatus ?? cp.checkpoint_status);
+        if ((0, normalization_1.detectPackstationFromDescription)(desc))
+            evInternal = 'in_packstation';
+        const location = [cp.city, cp.country_name].filter(Boolean).join(', ')
+            || cp.location || '';
+        return [{
+                timestamp: ts,
+                location,
+                status: (0, normalization_1.internalStatusToDb)(evInternal),
+                description: desc,
+            }];
+    });
+    if (rawEvents.length === 0) {
+        const t = tracking.latest_checkpoint_time && !isNaN(new Date(tracking.latest_checkpoint_time).getTime())
+            ? new Date(tracking.latest_checkpoint_time)
+            : new Date();
+        rawEvents.push({
+            timestamp: t,
+            location: '',
+            status: (0, normalization_1.internalStatusToDb)(internalStatus),
+            description: latestEvent || deliveryStatusRaw || 'Status-Update',
+        });
+    }
+    const events = (0, normalization_1.dedupeEvents)(rawEvents).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    let estimatedDelivery;
+    const etaRaw = tracking.estimated_delivery_date ?? tracking.scheduled_delivery_date;
+    if (etaRaw) {
+        const d = new Date(etaRaw);
+        if (!isNaN(d.getTime()))
+            estimatedDelivery = d;
+    }
+    return {
+        provider: `trackingmore/${courierCode}`,
+        internalStatus,
+        status: (0, normalization_1.internalStatusToDb)(internalStatus),
+        events,
+        estimatedDelivery,
+        detectedCarrier: detected?.courierName,
+        courierCode,
+    };
 }
 // ─── Provider ─────────────────────────────────────────────────────────────────
 class TrackingMoreProvider {
@@ -397,6 +526,7 @@ class TrackingMoreProvider {
         }
         // ── 2. Tracking registrieren (createTracking); Payload enthält oft bereits alle Daten ───
         let createEnvelope = null;
+        let lastError = null;
         const createPayload = { tracking_number: trackingNumber, courier_code: courierCode };
         try {
             tmLogRequest('POST', '/v4/trackings/create', createPayload);
@@ -406,90 +536,45 @@ class TrackingMoreProvider {
             throwIfTmError(createEnvelope, 'createTracking');
         }
         catch (err) {
+            if (err instanceof types_1.TrackingProviderError)
+                lastError = err;
             console.warn('[TrackingMore] createTracking Fehler (ignoriert):', err);
             if (tmLogEnabled()) {
                 console.warn(`${TM_LOG_PREFIX}   Fehler trackings/create:`, err);
             }
         }
-        // ── 3. Tracking-Status abrufen (GET); Fallback: Daten aus createTracking ─────────────
+        // ── 3. Tracking-Status abrufen (GET); Fallback: create / v2-realtime ─────────────
         let trackingItems = [];
         try {
             const result = await getTrackingData(trackingNumber, courierCode);
             trackingItems = extractTrackingsFromEnvelope(result);
         }
         catch (err) {
+            if (err instanceof types_1.TrackingProviderError)
+                lastError = err;
             console.warn('[TrackingMore] GET trackings/get:', err);
         }
         if (trackingItems.length === 0 && createEnvelope) {
             trackingItems = extractTrackingsFromEnvelope(createEnvelope);
         }
         if (trackingItems.length === 0) {
+            try {
+                const realtime = await fetchRealtimeV2(trackingNumber, courierCode);
+                if (realtime)
+                    trackingItems = extractTrackingsFromEnvelope(realtime);
+            }
+            catch (err) {
+                if (err instanceof types_1.TrackingProviderError)
+                    lastError = err;
+            }
+        }
+        if (trackingItems.length === 0) {
+            if (lastError)
+                throw lastError;
             const createCode = createEnvelope ? envelopeMetaCode(createEnvelope) : undefined;
-            const hint = createCode === 4190
-                ? ' TrackingMore-Kontingent erschöpft – Plan upgraden oder später erneut versuchen.'
-                : createCode === 401
-                    ? ' TrackingMore API-Key ungültig oder abgelaufen.'
-                    : '';
-            throw new types_1.TrackingProviderError(this.providerName, 'not_found', `Keine Tracking-Daten für Sendung ${trackingNumber} (${courierCode}).${hint}`);
+            throw new types_1.TrackingProviderError(this.providerName, TM_QUOTA_CODES.has(createCode ?? -1) ? 'rate_limit' : 'not_found', `Keine Tracking-Daten für Sendung ${trackingNumber} (${courierCode}). ${tmUserMessage(createCode)}`, TM_QUOTA_CODES.has(createCode ?? -1));
         }
-        const tracking = trackingItems[0];
-        const deliveryStatusRaw = tracking.delivery_status
-            || tracking.status
-            || '';
-        // ── Status: delivery_status „delivered“ → Geliefert (DB: delivered → Frontend „Zugestellt“)
-        let internalStatus = mapStatus(tracking.substatus ?? deliveryStatusRaw);
-        const latestEvent = tracking.latest_event ?? '';
-        if ((0, normalization_1.detectPackstationFromDescription)(latestEvent))
-            internalStatus = 'in_packstation';
-        const checkpointRows = collectCheckpoints(tracking);
-        let rawEvents = checkpointRows.flatMap((cp) => {
-            if (!cp.checkpoint_time)
-                return [];
-            const ts = new Date(cp.checkpoint_time);
-            if (isNaN(ts.getTime()))
-                return [];
-            const desc = cp.message || 'Status-Update';
-            let evInternal = mapStatus(cp.substatus ?? cp.checkpoint_status);
-            if ((0, normalization_1.detectPackstationFromDescription)(desc))
-                evInternal = 'in_packstation';
-            const location = [cp.city, cp.country_name].filter(Boolean).join(', ')
-                || cp.location || '';
-            return [{
-                    timestamp: ts,
-                    location,
-                    status: (0, normalization_1.internalStatusToDb)(evInternal),
-                    description: desc,
-                }];
-        });
-        if (rawEvents.length === 0) {
-            const t = tracking.latest_checkpoint_time && !isNaN(new Date(tracking.latest_checkpoint_time).getTime())
-                ? new Date(tracking.latest_checkpoint_time)
-                : new Date();
-            rawEvents.push({
-                timestamp: t,
-                location: '',
-                status: (0, normalization_1.internalStatusToDb)(internalStatus),
-                description: latestEvent || deliveryStatusRaw || 'Status-Update',
-            });
-        }
-        const events = (0, normalization_1.dedupeEvents)(rawEvents).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-        // ── Estimated Delivery ────────────────────────────────────────────────────
-        let estimatedDelivery;
-        const etaRaw = tracking.estimated_delivery_date ?? tracking.scheduled_delivery_date;
-        if (etaRaw) {
-            const d = new Date(etaRaw);
-            if (!isNaN(d.getTime()))
-                estimatedDelivery = d;
-        }
-        return {
-            provider: `${this.providerName}/${courierCode}`,
-            internalStatus,
-            status: (0, normalization_1.internalStatusToDb)(internalStatus),
-            events,
-            estimatedDelivery,
-            detectedCarrier: detected?.courierName,
-            courierCode,
-        };
+        return buildTrackingResult(trackingItems[0], trackingNumber, courierCode, detected);
     }
 }
 exports.TrackingMoreProvider = TrackingMoreProvider;

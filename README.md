@@ -39,6 +39,21 @@ Der Testzugang umgeht die Stripe-Zahlungspflicht.
 - Node.js 18+
 - npm
 
+### Schnellstart (Hauptordner)
+
+Ab dem Repository-Root (`paketdienst/`):
+
+```bash
+# Produktion / Server: Abhängigkeiten, Prisma, Build, Backend starten
+npm run build
+
+# Entwicklung: Backend + Frontend parallel
+npm run dev
+```
+
+Nur kompilieren (ohne Install/Start, z. B. Deployment-Skript): `npm run build:compile`.  
+Einzeln: `npm run build:backend`, `npm run build:frontend`, `npm run db:migrate`, `npm run start`.
+
 ### 1. Backend einrichten
 
 ```bash
@@ -190,6 +205,7 @@ Optionale Betriebs-Flags:
 
 ```
 paketdienst/
+├── package.json        # Build & Skripte für Backend + Frontend
 ├── backend/
 │   ├── src/
 │   │   ├── routes/         # API-Endpunkte

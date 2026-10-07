@@ -149,9 +149,9 @@ run_migrations() {
 
 build_backend() {
   log "Backend bauen"
-  run bash -c "cd '$BACKEND_DIR' && npm ci"
+  run bash -c "cd '$REPO_DIR' && npm ci --prefix backend"
   run_migrations
-  run bash -c "cd '$BACKEND_DIR' && npm run build"
+  run bash -c "cd '$REPO_DIR' && npm run build:backend"
   ok "Backend gebaut"
 }
 
@@ -179,8 +179,8 @@ restart_backend() {
 
 build_frontend() {
   log "Frontend bauen"
-  run bash -c "cd '$FRONTEND_DIR' && npm ci"
-  run bash -c "cd '$FRONTEND_DIR' && npm run build"
+  run bash -c "cd '$REPO_DIR' && npm ci --prefix frontend"
+  run bash -c "cd '$REPO_DIR' && npm run build:frontend"
   ok "Frontend gebaut"
 }
 
