@@ -29,11 +29,29 @@ function die(msg) {
 
 function run(cmd, opts = {}) {
   log(cmd);
-  execSync(cmd, { stdio: 'inherit', cwd: REPO_ROOT, ...opts });
+  try {
+    execSync(cmd, { stdio: 'inherit', cwd: REPO_ROOT, ...opts });
+  } catch (err) {
+    const msg = String(err.message || err);
+    if (msg.includes('Permission denied') && cmd.includes('/etc/systemd/system')) {
+      die(
+        'Keine Rechte für systemd (cp/sed). Auf dem Server ausführen:\n' +
+          '  DEPLOY_SUDO=1 npm run build\n' +
+          'oder nur bauen ohne systemd:\n' +
+          '  SKIP_SYSTEMD=1 npm run build',
+      );
+    }
+    throw err;
+  }
 }
 
 function sudoPrefix() {
-  return process.env.DEPLOY_SUDO === '1' ? 'sudo ' : '';
+  if (process.getuid?.() === 0) return '';
+  if (process.env.DEPLOY_SUDO === '0') return '';
+  if (process.env.DEPLOY_SUDO === '1') return 'sudo ';
+  // Auf Linux braucht systemd root — sonst „Permission denied“ bei cp nach /etc/systemd/system/
+  if (process.platform === 'linux') return 'sudo ';
+  return '';
 }
 
 function loadConfig() {

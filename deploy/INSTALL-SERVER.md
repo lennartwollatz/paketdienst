@@ -259,20 +259,15 @@ Das Skript **`scripts/server-build.mjs`** erledigt automatisch:
 8. `daemon-reload`, `enable`, **restart** API + Web
 9. Health-Check auf Port 3001 und 3002
 
-Bei Bedarf sudo-Passwort eingeben.
+Beim Kopieren nach `/etc/systemd/system/` wird auf Linux automatisch **`sudo`** verwendet (Passwort kann abgefragt werden).
 
-**Optional dauerhaft** in `~/.bashrc`:
-
-```bash
-export DEPLOY_SUDO=1
-```
-
-Dann reicht:
+Ohne systemd-Rechte nur bauen:
 
 ```bash
-cd /var/www/paketdienst
-npm run build
+SKIP_SYSTEMD=1 npm run build
 ```
+
+Explizit kein sudo (schlägt bei systemd fehl): `DEPLOY_SUDO=0 npm run build`
 
 **Ohne Git / ohne systemd** (nur lokal bauen):
 
