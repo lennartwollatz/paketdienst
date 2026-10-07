@@ -187,11 +187,13 @@ function main() {
     warn('git pull übersprungen (SKIP_GIT_PULL=1)');
   }
 
-  if (!fs.existsSync(path.join(REPO_ROOT, 'backend', '.env'))) {
-    die('backend/.env fehlt auf dem Server (einmalig anlegen, siehe deploy/INSTALL-SERVER.md)');
-  }
-  if (!fs.existsSync(path.join(REPO_ROOT, 'frontend', '.env'))) {
-    die('frontend/.env fehlt — VITE_* werden beim Build benötigt');
+  const backendEnv = path.join(REPO_ROOT, 'backend', '.env');
+  const frontendEnv = path.join(REPO_ROOT, 'frontend', '.env');
+  if (!fs.existsSync(backendEnv) || !fs.existsSync(frontendEnv)) {
+    die(
+      'backend/.env oder frontend/.env fehlt — einmalig: npm run env:init\n' +
+        'Dann Werte anpassen (nano backend/.env frontend/.env), siehe deploy/INSTALL-SERVER.md',
+    );
   }
 
   log('Abhängigkeiten (npm ci)');

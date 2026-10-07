@@ -20,25 +20,46 @@ APP=/var/www/paketdienst
 USER=smarthome
 ```
 
-### 1. Einmalig: Env-Dateien
+### 1. Einmalig: Env-Dateien kopieren
 
-**Backend** `/var/www/paketdienst/backend/.env` (mindestens):
+Vorlagen liegen im Repo unter `deploy/` (ohne echte Secrets, dürfen ins Git).
 
-```env
-PORT=3001
-NODE_ENV=production
-FRONTEND_URL=https://wollatzsmarthome.ddns.net/paketdienst
-DATABASE_URL="file:./prod.db"
-JWT_SECRET=…
+```bash
+cd /var/www/paketdienst
+git pull
+npm run env:init
 ```
 
-**Frontend** `/var/www/paketdienst/frontend/.env` (vor jedem Build prüfen):
+Das legt **nur an**, wenn die Datei noch fehlt:
 
-```env
-VITE_FRONTEND_URL=https://wollatzsmarthome.ddns.net/paketdienst
-# VITE_API_URL leer lassen → relative /paketdienst/api
-VITE_STRIPE_PUBLISHABLE_KEY=pk_…
+- `backend/.env` ← `deploy/env.backend.production.example`
+- `frontend/.env` ← `deploy/env.frontend.production.example`
+
+**Manuell (gleiche Wirkung):**
+
+```bash
+cd /var/www/paketdienst
+test -f backend/.env  || cp deploy/env.backend.production.example backend/.env
+test -f frontend/.env || cp deploy/env.frontend.production.example frontend/.env
 ```
+
+**Danach einmal bearbeiten** (Secrets eintragen):
+
+```bash
+nano backend/.env
+nano frontend/.env
+```
+
+Mindestens **`JWT_SECRET`**, **`VITE_STRIPE_PUBLISHABLE_KEY`** / Stripe im Backend; Rest nach Bedarf (OpenAI, SMTP, TrackingMore, VAPID).
+
+Alternative für lokale Entwicklung statt Produktion:
+
+```bash
+test -f backend/.env  || cp backend/.env.example backend/.env
+test -f frontend/.env || cp frontend/.env.example frontend/.env
+```
+
+`.env`-Dateien werden **nicht** überschrieben, wenn sie schon existieren — Updates per `npm run build` bleiben unberührt.
 
 ### 2. Code holen (erstes Mal)
 
@@ -243,11 +264,13 @@ SKIP_GIT_PULL=1 SKIP_SYSTEMD=1 npm run build:compile
 
 ## Ersteinrichtung in einem Block (Copy & Paste)
 
-Nachdem `backend/.env` und `frontend/.env` existieren und der Code unter `/var/www/paketdienst` liegt:
+Nachdem der Code unter `/var/www/paketdienst` liegt:
 
 ```bash
 cd /var/www/paketdienst
 git pull
+npm run env:init
+nano backend/.env frontend/.env
 pm2 delete paketdienst 2>/dev/null || true
 pm2 delete paketdienst-backend 2>/dev/null || true
 sudo systemctl stop paketdienst-api paketdienst-web 2>/dev/null || true
