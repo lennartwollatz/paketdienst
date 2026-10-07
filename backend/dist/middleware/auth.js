@@ -7,6 +7,7 @@ exports.requireAuth = requireAuth;
 exports.requirePayment = requirePayment;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const client_1 = require("@prisma/client");
+const testAccess_1 = require("../lib/testAccess");
 const prisma = new client_1.PrismaClient();
 const FREE_PROCESSED_ORDERS_LIMIT = Number(process.env.FREE_PROCESSED_ORDERS_LIMIT || 20);
 function isProcessedOrderStatus(status) {
@@ -47,7 +48,7 @@ async function requireAuth(req, res, next) {
         req.user = {
             id: user.id,
             email: user.email,
-            isTestUser: user.isTestUser,
+            isTestUser: (0, testAccess_1.effectiveIsTestUser)(user.isTestUser),
             hasPaymentMethod: user.hasPaymentMethod,
             stripeSubscriptionId: user.stripeSubscriptionId,
         };

@@ -1,14 +1,23 @@
 import nodemailer from 'nodemailer';
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT || '587'),
-  secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+function createTransporter() {
+  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+  const port = parseInt(process.env.SMTP_PORT || '587', 10);
+  const user = process.env.SMTP_USER?.trim();
+  const pass = process.env.SMTP_PASS?.trim();
+  const useAuth = Boolean(user && pass);
+
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure: port === 465,
+    ...(useAuth ? { auth: { user, pass } } : {}),
+    // Lokales Postfix (127.0.0.1:25) ohne TLS
+    ...(host === '127.0.0.1' || host === 'localhost' ? { tls: { rejectUnauthorized: false } } : {}),
+  });
+}
+
+const transporter = createTransporter();
 
 export async function sendPasswordResetEmail(to: string, token: string) {
   const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;

@@ -1,19 +1,35 @@
 import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { isTestAccessEnabled } from './lib/testAccess';
 
 const prisma = new PrismaClient();
+const TEST_EMAIL = 'lena@test.local';
 
 async function main() {
   console.log('Seed wird ausgeführt...');
 
-  // Testuser anlegen (lena / lennart)
-  const existing = await prisma.user.findUnique({ where: { email: 'lena@test.local' } });
+  const existing = await prisma.user.findUnique({ where: { email: TEST_EMAIL } });
+
+  if (!isTestAccessEnabled()) {
+    if (existing?.isTestUser) {
+      await prisma.user.update({
+        where: { email: TEST_EMAIL },
+        data: { isTestUser: false },
+      });
+      console.log('Testzugang deaktiviert — isTestUser für lena@test.local entfernt');
+    } else {
+      console.log('Testzugang deaktiviert — kein Testuser angelegt');
+    }
+    console.log('Seed abgeschlossen.');
+    return;
+  }
+
   if (!existing) {
     const passwordHash = await bcrypt.hash('lennart', 12);
     const testUser = await prisma.user.create({
       data: {
-        email: 'lena@test.local',
+        email: TEST_EMAIL,
         passwordHash,
         isTestUser: true,
         hasPaymentMethod: true,

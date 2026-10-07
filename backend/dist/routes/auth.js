@@ -11,6 +11,7 @@ const client_1 = require("@prisma/client");
 const zod_1 = require("zod");
 const mailer_1 = require("../services/mailer");
 const auth_1 = require("../middleware/auth");
+const testAccess_1 = require("../lib/testAccess");
 const router = (0, express_1.Router)();
 const prisma = new client_1.PrismaClient();
 const registerSchema = zod_1.z.object({
@@ -42,7 +43,7 @@ router.post('/register', async (req, res) => {
             user: {
                 id: user.id,
                 email: user.email,
-                isTestUser: user.isTestUser,
+                isTestUser: (0, testAccess_1.effectiveIsTestUser)(user.isTestUser),
                 hasPaymentMethod: user.hasPaymentMethod,
             },
         });
@@ -67,13 +68,16 @@ router.post('/login', async (req, res) => {
         if (!valid) {
             return res.status(401).json({ error: 'E-Mail oder Passwort falsch' });
         }
+        if (user.isTestUser && !(0, testAccess_1.isTestAccessEnabled)()) {
+            return res.status(403).json({ error: 'Testzugang ist deaktiviert' });
+        }
         const token = generateToken(user.id, user.email);
         return res.json({
             token,
             user: {
                 id: user.id,
                 email: user.email,
-                isTestUser: user.isTestUser,
+                isTestUser: (0, testAccess_1.effectiveIsTestUser)(user.isTestUser),
                 hasPaymentMethod: user.hasPaymentMethod,
             },
         });

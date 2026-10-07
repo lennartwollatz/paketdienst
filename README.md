@@ -13,14 +13,11 @@ Eine mobile Full-Stack-Webapp zur automatischen Erkennung von Bestellungen aus E
 - 20 verarbeitete Bestellungen gratis, danach einmalige Freischaltung (10 EUR) via Stripe
 - Modernes, mobiles Design mit Bottom-Navigation
 
-## Testzugang
+## Testzugang (nur Entwicklung)
 
-| Feld     | Wert           |
-|----------|----------------|
-| E-Mail   | lena@test.local |
-| Passwort | lennart        |
+Lokal mit `TEST_ACCESS_ENABLED=true` in `backend/.env`: `lena@test.local` / `lennart` (Stripe-Bypass).
 
-Der Testzugang umgeht die Stripe-Zahlungspflicht.
+**Produktion:** `TEST_ACCESS_ENABLED=false` (Standard bei `NODE_ENV=production`) — Login blockiert, Hinweis in der UI nur im Dev-Build.
 
 ## Technischer Stack
 

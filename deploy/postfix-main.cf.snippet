@@ -1,0 +1,35 @@
+# Snippet für /etc/postfix/main.cf (Paketdienst, externer Versand)
+# Nach dem Einfügen: sudo postfix check && sudo systemctl reload postfix
+#
+# /etc/mailname sollte enthalten: wollatzsmarthome.ddns.net
+
+myhostname = wollatzsmarthome.ddns.net
+myorigin = /etc/mailname
+mydomain = wollatzsmarthome.ddns.net
+
+# Node/App sendet nur von localhost — Postfix liefert trotzdem nach extern
+inet_interfaces = loopback-only
+inet_protocols = ipv4
+
+mydestination = $myhostname, localhost.$mydomain, localhost
+mynetworks = 127.0.0.0/8 [::1]/128
+
+# Direkt zum Ziel-Server (Gmail usw.) — leer lassen
+relayhost =
+
+# TLS beim Versand zu fremden MX-Servern (empfohlen)
+smtp_tls_security_level = may
+smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt
+
+# Absender-Domain der App: noreply@wollatzsmarthome.ddns.net
+# (kein extra Eintrag nötig; From kommt aus der App)
+
+# --- Optional: ISP blockiert ausgehend Port 25 → Smarthost (587) ---
+# relayhost = [smtp.dein-provider.de]:587
+# smtp_sasl_auth_enable = yes
+# smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd
+# smtp_sasl_security_options = noanonymous
+# smtp_tls_security_level = encrypt
+# Datei /etc/postfix/sasl_passwd:
+#   [smtp.dein-provider.de]:587    benutzer:passwort
+# Dann: sudo postmap /etc/postfix/sasl_passwd && sudo systemctl reload postfix

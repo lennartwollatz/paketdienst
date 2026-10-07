@@ -2,6 +2,7 @@ import { Router, Response, Request } from 'express';
 import Stripe from 'stripe';
 import { PrismaClient } from '@prisma/client';
 import { requireAuth, AuthRequest } from '../middleware/auth';
+import { effectiveIsTestUser } from '../lib/testAccess';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -98,7 +99,7 @@ router.post('/confirm-one-time-payment', requireAuth, async (req: AuthRequest, r
     if (!user) return res.status(404).json({ error: 'Benutzer nicht gefunden' });
 
     if (isMock) {
-      if (!user.isTestUser && process.env.NODE_ENV === 'production') {
+      if (!effectiveIsTestUser(user.isTestUser) && process.env.NODE_ENV === 'production') {
         return res.status(403).json({ error: 'Mock-Zahlung ist nur für Testnutzer erlaubt' });
       }
     } else {
@@ -144,11 +145,12 @@ router.get('/status', requireAuth, async (req: AuthRequest, res: Response) => {
     select: { status: true },
   });
   const processedOrdersCount = orders.filter((order) => isProcessedOrderStatus(order.status)).length;
-  const paymentRequired = !user?.isTestUser && !user?.hasPaymentMethod && processedOrdersCount >= FREE_PROCESSED_ORDERS_LIMIT;
+  const isTestUser = effectiveIsTestUser(user?.isTestUser ?? false);
+  const paymentRequired = !isTestUser && !user?.hasPaymentMethod && processedOrdersCount >= FREE_PROCESSED_ORDERS_LIMIT;
 
   return res.json({
     hasPaymentMethod: user?.hasPaymentMethod || false,
-    isTestUser: user?.isTestUser || false,
+    isTestUser,
     stripeConfigured: !!getStripe(),
     processedOrdersCount,
     freeProcessedOrdersLimit: FREE_PROCESSED_ORDERS_LIMIT,

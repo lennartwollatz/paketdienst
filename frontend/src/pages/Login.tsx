@@ -102,12 +102,13 @@ export default function Login() {
           </div>
         </div>
 
-        {/* Test user hint */}
-        <div className="mt-4 bg-blue-700 bg-opacity-50 rounded-2xl p-4">
-          <p className="text-blue-100 text-sm text-center">
-            <span className="font-semibold">Testzugang:</span> lena@test.local / lennart
-          </p>
-        </div>
+        {import.meta.env.DEV && (
+          <div className="mt-4 bg-blue-700 bg-opacity-50 rounded-2xl p-4">
+            <p className="text-blue-100 text-sm text-center">
+              <span className="font-semibold">Testzugang (nur Dev):</span> lena@test.local / lennart
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

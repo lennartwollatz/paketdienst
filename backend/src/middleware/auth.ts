@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
+import { effectiveIsTestUser } from '../lib/testAccess';
 
 const prisma = new PrismaClient();
 const FREE_PROCESSED_ORDERS_LIMIT = Number(process.env.FREE_PROCESSED_ORDERS_LIMIT || 20);
@@ -60,7 +61,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     req.user = {
       id: user.id,
       email: user.email,
-      isTestUser: user.isTestUser,
+      isTestUser: effectiveIsTestUser(user.isTestUser),
       hasPaymentMethod: user.hasPaymentMethod,
       stripeSubscriptionId: user.stripeSubscriptionId,
     };

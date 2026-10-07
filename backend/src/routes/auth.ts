@@ -6,6 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { sendPasswordResetEmail } from '../services/mailer';
 import { requireAuth, AuthRequest } from '../middleware/auth';
+import { effectiveIsTestUser, isTestAccessEnabled } from '../lib/testAccess';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -45,7 +46,7 @@ router.post('/register', async (req: Request, res: Response) => {
       user: {
         id: user.id,
         email: user.email,
-        isTestUser: user.isTestUser,
+        isTestUser: effectiveIsTestUser(user.isTestUser),
         hasPaymentMethod: user.hasPaymentMethod,
       },
     });
@@ -73,13 +74,17 @@ router.post('/login', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'E-Mail oder Passwort falsch' });
     }
 
+    if (user.isTestUser && !isTestAccessEnabled()) {
+      return res.status(403).json({ error: 'Testzugang ist deaktiviert' });
+    }
+
     const token = generateToken(user.id, user.email);
     return res.json({
       token,
       user: {
         id: user.id,
         email: user.email,
-        isTestUser: user.isTestUser,
+        isTestUser: effectiveIsTestUser(user.isTestUser),
         hasPaymentMethod: user.hasPaymentMethod,
       },
     });

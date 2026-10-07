@@ -6,16 +6,31 @@ Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const client_1 = require("@prisma/client");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const testAccess_1 = require("./lib/testAccess");
 const prisma = new client_1.PrismaClient();
+const TEST_EMAIL = 'lena@test.local';
 async function main() {
     console.log('Seed wird ausgeführt...');
-    // Testuser anlegen (lena / lennart)
-    const existing = await prisma.user.findUnique({ where: { email: 'lena@test.local' } });
+    const existing = await prisma.user.findUnique({ where: { email: TEST_EMAIL } });
+    if (!(0, testAccess_1.isTestAccessEnabled)()) {
+        if (existing?.isTestUser) {
+            await prisma.user.update({
+                where: { email: TEST_EMAIL },
+                data: { isTestUser: false },
+            });
+            console.log('Testzugang deaktiviert — isTestUser für lena@test.local entfernt');
+        }
+        else {
+            console.log('Testzugang deaktiviert — kein Testuser angelegt');
+        }
+        console.log('Seed abgeschlossen.');
+        return;
+    }
     if (!existing) {
         const passwordHash = await bcryptjs_1.default.hash('lennart', 12);
         const testUser = await prisma.user.create({
             data: {
-                email: 'lena@test.local',
+                email: TEST_EMAIL,
                 passwordHash,
                 isTestUser: true,
                 hasPaymentMethod: true,
