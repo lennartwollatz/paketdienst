@@ -153,6 +153,22 @@ function installSystemdUnits(cfg) {
   run(`${sudo}systemctl enable ${cfg.apiUnit} ${cfg.webUnit} ${cfg.targetUnit}`);
 }
 
+function readBackendPort(cfg) {
+  const envPath = path.join(REPO_ROOT, 'backend', '.env');
+  if (!fs.existsSync(envPath)) return cfg.apiPort;
+  const text = fs.readFileSync(envPath, 'utf8');
+  const m = text.match(/^\s*PORT\s*=\s*(\d+)\s*$/m);
+  if (!m) return cfg.apiPort;
+  const fromEnv = parseInt(m[1], 10);
+  if (fromEnv !== cfg.apiPort) {
+    warn(
+      `backend/.env PORT=${fromEnv} — Nginx/systemd erwarten ${cfg.apiPort}. ` +
+        'In Produktion PORT=3001 in backend/.env setzen (systemd setzt PORT=3001 nach .env).',
+    );
+  }
+  return cfg.apiPort;
+}
+
 function restartServices(cfg) {
   const sudo = sudoPrefix();
   run(`${sudo}systemctl restart ${cfg.apiUnit} ${cfg.webUnit}`);
@@ -167,15 +183,35 @@ function restartServices(cfg) {
   ok('systemd-Dienste neu gestartet');
 }
 
+function printServiceLogs(cfg) {
+  const sudo = sudoPrefix();
+  warn('Letzte Log-Zeilen paketdienst-api:');
+  try {
+    execSync(`${sudo}journalctl -u ${cfg.apiUnit} -n 25 --no-pager`, {
+      stdio: 'inherit',
+      cwd: REPO_ROOT,
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
 function healthCheck(cfg) {
-  const apiUrl = `http://127.0.0.1:${cfg.apiPort}/api/health`;
+  const apiPort = readBackendPort(cfg);
+  const apiUrl = `http://127.0.0.1:${apiPort}/api/health`;
   const webUrl = `http://127.0.0.1:${cfg.webPort}${cfg.basePath}/`;
+
+  execSync('sleep 2', { stdio: 'ignore', shell: true });
 
   let apiBody;
   try {
-    apiBody = execSync(`curl -sf "${apiUrl}"`, { encoding: 'utf8' });
+    apiBody = execSync(`curl -sf "${apiUrl}"`, { encoding: 'utf8', timeout: 10_000 });
   } catch {
-    die(`API-Health fehlgeschlagen: ${apiUrl}`);
+    printServiceLogs(cfg);
+    die(
+      `API-Health fehlgeschlagen: ${apiUrl}\n` +
+        'Prüfen: sudo systemctl status paketdienst-api, backend/.env (PORT=3001, JWT_SECRET), dist/index.js',
+    );
   }
   if (!apiBody.includes('"status"')) {
     die(`Unerwartete API-Antwort: ${apiBody.slice(0, 200)}`);

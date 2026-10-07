@@ -8,10 +8,10 @@ Type=simple
 User=smarthome
 Group=smarthome
 WorkingDirectory=/var/www/paketdienst/backend
+EnvironmentFile=-/var/www/paketdienst/backend/.env
 Environment=NODE_ENV=production
 Environment=PORT=3001
 Environment=HOST=127.0.0.1
-EnvironmentFile=-/var/www/paketdienst/backend/.env
 ExecStart=/usr/bin/env node dist/index.js
 Restart=on-failure
 RestartSec=5
