@@ -4,7 +4,7 @@
 # deploy.config wird nicht ins Git eingecheckt (server-spezifische Pfade).
 
 # Absoluter Pfad zum Git-Repository auf dem Server
-REPO_DIR="/home/DEIN_USER/paketdienst"
+REPO_DIR="/var/www/paketdienst"
 
 # Zielordner für das gebaute Frontend (Nginx root/alias für /paketdienst/)
 FRONTEND_DEPLOY_DIR="/var/www/paketdienst"

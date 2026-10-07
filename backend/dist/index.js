@@ -18,7 +18,8 @@ const emailPoller_1 = require("./services/emailPoller");
 const push_2 = require("./services/push");
 const prisma = new client_1.PrismaClient();
 const app = (0, express_1.default)();
-const PORT = process.env.PORT || 3001;
+const PORT = parseInt(process.env.PORT || '3001', 10);
+const HOST = process.env.HOST || '0.0.0.0';
 function isAllowedCorsOrigin(origin) {
     const allowedUrl = process.env.FRONTEND_URL?.trim();
     if (!allowedUrl)
@@ -112,8 +113,8 @@ async function backfillOrderEmails() {
         console.log(`[migration] ${created} fehlende OrderEmail-Einträge nacherstellt.`);
     }
 }
-app.listen(PORT, async () => {
-    console.log(`Server läuft auf Port ${PORT}`);
+app.listen(PORT, HOST, async () => {
+    console.log(`Server läuft auf ${HOST}:${PORT}`);
     await backfillOrderEmails();
     (0, push_2.initPushService)();
     (0, poller_1.startTrackingPoller)();

@@ -1,0 +1,13 @@
+{
+  "appDir": "/var/www/paketdienst",
+  "user": "smarthome",
+  "gitBranch": "main",
+  "basePath": "/paketdienst",
+  "apiPort": 3001,
+  "webPort": 3002,
+  "apiUnit": "paketdienst-api",
+  "webUnit": "paketdienst-web",
+  "targetUnit": "paketdienst.target",
+  "publicUrl": "https://wollatzsmarthome.ddns.net/paketdienst",
+  "pm2LegacyNames": ["paketdienst", "paketdienst-backend"]
+}

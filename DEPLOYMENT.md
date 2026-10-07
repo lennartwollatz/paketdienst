@@ -66,7 +66,7 @@ Variablen mit **`VITE_`** werden **beim Build** in den Code geschrieben. Ohne Ne
 
    Beides kompilieren ohne Neustart: `npm run build:compile` (nach `npm run ci:all`).
 
-   **`npm run build`** im Root installiert Abhängigkeiten, baut alles und **startet das Backend** — auf dem Server besser `./deploy.sh` oder `build:compile` + systemd/pm2 nutzen.
+   **Server-Update (empfohlen):** `DEPLOY_SUDO=1 npm run build` — siehe **`deploy/INSTALL-SERVER.md`** (git pull, Build, systemd, Health-Check). Alternativ weiter `./deploy.sh`.
 
 4. **`dist/`** auf den Server kopieren (siehe Schritt 5).
 

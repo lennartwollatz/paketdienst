@@ -1,0 +1,21 @@
+[Unit]
+Description=Paketdienst Frontend (statische Web-App)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=smarthome
+Group=smarthome
+WorkingDirectory=/var/www/paketdienst
+Environment=NODE_ENV=production
+Environment=BASE_PATH=/paketdienst
+Environment=FRONTEND_DIST=/var/www/paketdienst/frontend/dist
+Environment=PORT=3002
+Environment=HOST=127.0.0.1
+ExecStart=/usr/bin/env node deploy/static-server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

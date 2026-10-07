@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Paketdienst WebApp (Backend + Frontend)",
   "scripts": {
-    "build": "npm run install:all && npm run db:generate && npm run build:compile && npm run start",
+    "build": "node scripts/server-build.mjs",
     "build:compile": "npm run build:backend && npm run build:frontend",
     "build:backend": "npm run build --prefix backend",
     "build:frontend": "npm run build --prefix frontend",

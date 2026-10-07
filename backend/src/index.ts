@@ -15,7 +15,8 @@ import { initPushService } from './services/push';
 const prisma = new PrismaClient();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = parseInt(process.env.PORT || '3001', 10);
+const HOST = process.env.HOST || '0.0.0.0';
 
 function isAllowedCorsOrigin(origin: string): boolean {
   const allowedUrl = process.env.FRONTEND_URL?.trim();
@@ -118,8 +119,8 @@ async function backfillOrderEmails(): Promise<void> {
   }
 }
 
-app.listen(PORT, async () => {
-  console.log(`Server läuft auf Port ${PORT}`);
+app.listen(PORT, HOST, async () => {
+  console.log(`Server läuft auf ${HOST}:${PORT}`);
   await backfillOrderEmails();
   initPushService();
   startTrackingPoller();
